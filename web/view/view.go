@@ -316,3 +316,83 @@ type LabelForm struct {
 
 // IsNew reports whether this form creates a label rather than editing one.
 func (f LabelForm) IsNew() bool { return f.UUID == "" }
+
+// ---------------------------------------------------------------------------
+// The admin console. The operator's surface.
+// ---------------------------------------------------------------------------
+
+// Account is one account as the console lists it.
+type Account struct {
+	UUID        string
+	DisplayName string
+	Email       string
+	IsOperator  bool
+	Suspended   bool
+	// MustChangePassword marks somebody who has been given a credential and has not
+	// yet replaced it — the console shows it, because it is how the operator knows a
+	// handover has not completed.
+	MustChangePassword bool
+	// Sessions is how many live sessions they hold, so the console shows who is
+	// signed in right now.
+	Sessions int
+	// Projects is how many boards they were granted.
+	Projects int
+	// IsSelf marks the signed-in operator, who is not offered controls that would
+	// lock them out.
+	IsSelf    bool
+	CreatedAt time.Time
+}
+
+// Reveal is a one-time password shown exactly once.
+//
+// It exists only for the length of the response that created it. It is never stored,
+// never put in a redirect, and never logged — which is why it is a field on a page
+// model rather than anything that survives a request.
+type Reveal struct {
+	Email    string
+	Password string
+	// Reset distinguishes the wording: a new account versus a replaced credential.
+	Reset bool
+}
+
+// AdminProject is one project as the console lists it.
+type AdminProject struct {
+	UUID       string
+	Slug       string
+	Name       string
+	IsArchived bool
+	Members    int
+	UpdatedAt  time.Time
+	// Access is who can reach it.
+	Access []Member
+}
+
+// AccountForm is the create/edit form's state.
+type AccountForm struct {
+	// UUID is empty when the form creates an account.
+	UUID        string
+	DisplayName string
+	Email       string
+	IsOperator  bool
+	Error       string
+	NameError   string
+	EmailError  string
+}
+
+// IsNew reports whether this form creates an account rather than editing one.
+func (f AccountForm) IsNew() bool { return f.UUID == "" }
+
+// AdminPage is the console.
+type AdminPage struct {
+	Accounts []Account
+	Projects []AdminProject
+	// Operators is how many owner accounts can still sign in. One is worth warning
+	// about: there is nobody to reset the password if it is lost.
+	Operators int
+	// Reveal carries a one-time password, set only on the response that generated it.
+	Reveal *Reveal
+	Form   AccountForm
+	// ShowArchived reflects the ?archived=1 toggle.
+	ShowArchived bool
+	Saved        string
+}

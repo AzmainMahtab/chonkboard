@@ -1,0 +1,164 @@
+package pages
+
+import (
+	"github.com/AzmainMahtab/chonkboard/web/components"
+	"github.com/AzmainMahtab/chonkboard/web/layouts"
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// AdminUsersPage is the operator's account list.
+//
+// There is no email in this system, so this page *is* the credential-handover flow:
+// creating an account produces a password shown once, right here, and handing it over is
+// something the operator does in person or over a channel they trust.
+templ AdminUsersPage(p view.Page, a view.AdminPage) {
+	@layouts.App(p) {
+		<div class="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
+			@adminNav("Accounts")
+			@adminSaved(a.Saved)
+			if a.Reveal != nil {
+				@components.Reveal(*a.Reveal)
+			}
+			if a.Operators == 1 {
+				<div
+					role="status"
+					class="mt-5 rounded-card border border-warn/35 bg-warn/10 px-3 py-2.5 text-sm"
+				>
+					<strong class="font-semibold">There is only one owner account.</strong>
+					<span class="text-ink-2">
+						If its password is lost there is nobody who can reset it. Consider making a
+						second account an owner.
+					</span>
+				</div>
+			}
+			<section class="mt-8">
+				<h2 class="text-sm font-semibold tracking-tight">
+					{ itoa(len(a.Accounts)) } { plural(len(a.Accounts), "account", "accounts") }
+				</h2>
+				<ul class="mt-4 flex flex-col gap-2">
+					for _, account := range a.Accounts {
+						@components.AccountRow(account)
+					}
+				</ul>
+			</section>
+			<section class="mt-8 border-t border-line pt-6">
+				<h2 class="text-sm font-semibold tracking-tight">
+					if a.Form.IsNew() {
+						New account
+					} else {
+						Edit account
+					}
+				</h2>
+				<p class="mt-0.5 text-xs text-ink-3">
+					if a.Form.IsNew() {
+						A password is generated and shown once. There is no email, so you hand it over
+						yourself.
+					} else {
+						Changing the address does not change the password.
+					}
+				</p>
+				@components.AccountForm(a.Form)
+			</section>
+		</div>
+	}
+}
+
+// AdminProjectsPage is the operator's view of every board and who can reach it.
+templ AdminProjectsPage(p view.Page, a view.AdminPage) {
+	@layouts.App(p) {
+		<div class="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
+			@adminNav("Projects")
+			@adminSaved(a.Saved)
+			<div class="mt-8 flex flex-wrap items-baseline justify-between gap-3">
+				<h2 class="text-sm font-semibold tracking-tight">
+					{ itoa(len(a.Projects)) } { plural(len(a.Projects), "board", "boards") }
+				</h2>
+				<div class="flex items-center gap-2">
+					if a.ShowArchived {
+						<a href="/admin/projects" class="btn-quiet">Hide archived</a>
+					} else {
+						<a href="/admin/projects?archived=1" class="btn-quiet">Show archived</a>
+					}
+					<a href="/projects/new" class="btn-primary">New project</a>
+				</div>
+			</div>
+			if len(a.Projects) == 0 {
+				<p class="mt-6 text-sm text-ink-3">No boards yet.</p>
+			} else {
+				<ul class="mt-4 flex flex-col gap-3">
+					for _, project := range a.Projects {
+						@adminProjectRow(project)
+					}
+				</ul>
+			}
+		</div>
+	}
+}
+
+// adminProjectRow is one board, with the answer to "who has access to this".
+templ adminProjectRow(project view.AdminProject) {
+	<li class="rounded-lane border border-line bg-surface p-3">
+		<div class="flex flex-wrap items-baseline gap-3">
+			<a
+				href={ templ.SafeURL("/projects/" + project.Slug) }
+				class="text-sm font-semibold tracking-tight hover:text-accent"
+			>{ project.Name }</a>
+			<span class="font-mono text-2xs text-ink-3">/{ project.Slug }</span>
+			if project.IsArchived {
+				<span class="rounded-pill bg-surface-3 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-ink-3">
+					Archived
+				</span>
+			}
+			<span class="flex-1"></span>
+			<a
+				href={ templ.SafeURL("/projects/" + project.Slug + "/settings") }
+				class="btn-quiet px-2 text-xs"
+			>Settings</a>
+		</div>
+		if len(project.Access) > 0 {
+			<ul class="mt-2.5 flex flex-wrap gap-1.5">
+				for _, m := range project.Access {
+					<li
+						class="flex items-center gap-1.5 rounded-pill bg-surface-2 px-2 py-0.5 text-2xs"
+						title={ m.Email }
+					>
+						<span class="font-medium">{ m.DisplayName }</span>
+						<span class="text-ink-3">{ m.Role }</span>
+						if m.Suspended {
+							<span class="text-danger">suspended</span>
+						}
+					</li>
+				}
+			</ul>
+		} else {
+			<p class="mt-2.5 text-xs text-ink-3">
+				Nobody has been granted this board.
+			</p>
+		}
+	</li>
+}
+
+templ adminNav(current string) {
+	<nav class="flex items-center gap-4 border-b border-line pb-3 text-sm">
+		<a href="/" class="text-ink-3 hover:text-ink">&larr; Projects</a>
+		<span class="text-line" aria-hidden="true">|</span>
+		@adminNavLink("/admin/users", "Accounts", current)
+		@adminNavLink("/admin/projects", "Projects", current)
+	</nav>
+}
+
+templ adminNavLink(href, label, current string) {
+	if label == current {
+		<span class="font-semibold" aria-current="page">{ label }</span>
+	} else {
+		<a href={ templ.SafeURL(href) } class="text-ink-3 hover:text-ink">{ label }</a>
+	}
+}
+
+templ adminSaved(saved string) {
+	if saved != "" {
+		<div role="status" class="mt-5 rounded-card border border-ok/35 bg-ok/10 px-3 py-2 text-sm">
+			{ saved }
+		</div>
+	}
+}

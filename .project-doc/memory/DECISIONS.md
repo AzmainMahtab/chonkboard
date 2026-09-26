@@ -685,3 +685,71 @@ because a debug surface should not advertise itself.
 
 `Hub.RoomCounts` returns a snapshot built under the read lock, so a caller cannot hold
 the lock while it renders.
+
+## 2026-09-26 — the admin slice has no domain and no store
+
+`internal/admin/{service,handler}` only, against the plan's four packages.
+
+Admin owns no entities. Every row it touches belongs to auth or to project, so a domain
+package here would hold nothing and a store would be a second way to reach tables that
+already have one — and a second way is how two definitions of the same rule appear. What
+admin does own is the *composition*: the dashboard's read model, and the orchestration
+that spans both slices.
+
+It declares ports for what it needs (`Accounts`, `ProjectDirectory`) and the other two
+satisfy them, as everywhere else. The port's row types are the project slice's own rather
+than mirrored: two structurally identical types will not convert across a slice, so
+mirroring buys an adapter loop and a second definition to keep in step.
+
+## 2026-09-26 — a one-time password is rendered into the response that created it
+
+No redirect after a create or a reset. The credential is written into *that* response and
+nowhere else.
+
+A redirect would have to carry the password in a query string or in a flash, and both
+persist it — a query string in history, logs and the Referer header; a flash in whatever
+backs it. The one property that matters is that the value exists in exactly one place for
+exactly as long as the response, so there is nothing to carry it in.
+
+The cost is that a refresh re-posts. That is the right trade: the alternative is a
+password that outlives its reveal.
+
+Verified in the walkthrough: the plaintext appears in no log line, in no table, and not in
+the page on a fresh load.
+
+## 2026-09-26 — the operator cannot lock themselves out
+
+Two refusals: suspending your own account, and demoting the last owner who can still sign
+in.
+
+Either would leave the installation with nobody able to administer it, recoverable only by
+editing the database by hand. Both are 409 and land on the console with the reason, because
+they are conflicts the operator needs to read rather than errors to be shown a page about.
+
+The console also warns when there is only one owner: if its password is lost there is
+nobody who can reset it.
+
+## 2026-09-26 — the whole console answers 404, never 403
+
+Including `GET /admin`, which checks before it redirects.
+
+Same reasoning as `/debug/live`: a member should not learn this surface exists. A bare
+redirect would have confirmed it — which is what `/admin` did until the walkthrough caught
+it returning 302 to somebody with no business knowing the route was there.
+
+## 2026-09-26 — no inline event handlers, anywhere
+
+Behaviour that would be an `onsubmit=` or `onchange=` attribute lives in `board.js` as a
+delegated listener, driven by `data-confirm` and `data-autosubmit`.
+
+Forced by our own CSP: `script-src 'self' 'unsafe-eval'` has no `'unsafe-inline'`, so an
+inline handler attribute is **blocked and silently never runs**. Four delete confirmations
+never appeared, and the member role picker — an `onchange` that submitted its form — did
+nothing at all. None of it produced an error a server-side test could see.
+
+Two tests hold the line: one asserts no rendered page contains an `on*=` attribute, the
+other asserts the CSP still has no `'unsafe-inline'` — because without the second, the
+first stops meaning anything.
+
+Alpine's directives are exempt and unaffected: they are not `on*` attributes, and Alpine
+evaluating them with `new Function` is the one reason `'unsafe-eval'` is there at all.

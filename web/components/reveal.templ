@@ -1,0 +1,231 @@
+package components
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// Reveal shows a one-time password.
+//
+// This is the only place in the application where a plaintext password is ever
+// rendered, and it happens exactly once: the value exists for the length of this
+// response and nowhere else — not in the database, not in a log line, not in a redirect.
+// Reloading the page does not show it again, because there is nothing left to show.
+//
+// The copy says so plainly, because a person who does not realise this is their only
+// chance will close the tab and need a reset.
+templ Reveal(r view.Reveal) {
+	<div
+		role="alert"
+		class="mt-6 rounded-lane border-2 border-accent bg-accent/5 p-4"
+	>
+		<h2 class="text-sm font-semibold tracking-tight">
+			if r.Reset {
+				Password reset — copy it now
+			} else {
+				Account created — copy this password now
+			}
+		</h2>
+		<p class="mt-1 text-xs text-ink-2">
+			This is shown <strong class="font-semibold">once</strong>. It is stored only as
+			a hash, so nobody — including you — can read it again. If you lose it, reset it.
+		</p>
+		<dl class="mt-3 grid gap-2 sm:grid-cols-[auto_1fr] sm:items-baseline">
+			<dt class="text-xs text-ink-3">Email</dt>
+			<dd class="font-mono text-sm">{ r.Email }</dd>
+			<dt class="text-xs text-ink-3">Password</dt>
+			<dd>
+				<code
+					class="inline-block select-all rounded-card border border-line-strong bg-surface px-2.5 py-1.5 font-mono text-sm tracking-wide"
+				>{ r.Password }</code>
+			</dd>
+		</dl>
+		<p class="mt-3 text-xs text-ink-3">
+			They will be asked to choose their own password the first time they sign in, so
+			this credential cannot stay in use.
+		</p>
+	</div>
+}
+
+// AccountRow is one account on the console.
+templ AccountRow(a view.Account) {
+	<li class="flex flex-wrap items-center gap-3 rounded-card border border-line bg-surface px-3 py-2.5">
+		<span
+			class="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-2xs font-semibold text-ink-2"
+			aria-hidden="true"
+		>{ initials(a.DisplayName) }</span>
+		<div class="min-w-40 flex-1">
+			<p class="truncate text-sm font-medium">
+				{ a.DisplayName }
+				if a.IsSelf {
+					<span class="font-normal text-ink-3">(you)</span>
+				}
+			</p>
+			<p class="truncate text-xs text-ink-3">{ a.Email }</p>
+		</div>
+		@accountBadges(a)
+		<dl class="flex shrink-0 items-baseline gap-3 text-2xs text-ink-3">
+			<div class="flex items-baseline gap-1">
+				<dt class="sr-only">Boards</dt>
+				<dd class="font-medium text-ink-2 tabular-nums">{ itoa(a.Projects) }</dd>
+				<span>{ pluralise(a.Projects, "board", "boards") }</span>
+			</div>
+			<div class="flex items-baseline gap-1">
+				<dt class="sr-only">Live sessions</dt>
+				<dd class="font-medium text-ink-2 tabular-nums">{ itoa(a.Sessions) }</dd>
+				<span>{ pluralise(a.Sessions, "session", "sessions") }</span>
+			</div>
+		</dl>
+		@accountActions(a)
+	</li>
+}
+
+templ accountBadges(a view.Account) {
+	<div class="flex shrink-0 flex-wrap items-center gap-1.5">
+		if a.IsOperator {
+			<span class="rounded-pill bg-accent/12 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-accent">
+				Owner
+			</span>
+		}
+		if a.Suspended {
+			<span class="rounded-pill bg-danger/10 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-danger">
+				Suspended
+			</span>
+		}
+		if a.MustChangePassword && !a.Suspended {
+			<span
+				class="rounded-pill bg-warn/12 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-warn"
+				title="They have been given a credential and have not replaced it yet"
+			>Handover pending</span>
+		}
+	</div>
+}
+
+templ accountActions(a view.Account) {
+	<div class="flex shrink-0 flex-wrap items-center gap-1">
+		<a href={ templ.SafeURL("/admin/users/" + a.UUID + "/edit") } class="btn-quiet px-2 text-xs">
+			Edit
+		</a>
+		@adminPost(
+			"/admin/users/"+a.UUID+"/password",
+			"Reset password",
+			"btn-quiet px-2 text-xs",
+			"Reset this password? Every session they hold is signed out, and the new password is shown once.",
+		)
+		if a.Sessions > 0 && !a.Suspended {
+			@adminPost(
+				"/admin/users/"+a.UUID+"/sign-out",
+				"Sign out",
+				"btn-quiet px-2 text-xs",
+				"Sign this person out of every browser?",
+			)
+		}
+		if a.Suspended {
+			@adminPost("/admin/users/"+a.UUID+"/reinstate", "Reinstate", "btn-quiet px-2 text-xs", "")
+		} else if !a.IsSelf {
+			@adminPost(
+				"/admin/users/"+a.UUID+"/suspend",
+				"Suspend",
+				"btn-quiet px-2 text-xs text-danger hover:bg-danger/10",
+				"Suspend this account? They are signed out immediately and cannot sign in again until reinstated.",
+			)
+		}
+	</div>
+}
+
+// adminPost is a one-button form. Every state change here is a POST, never a link: a
+// link is followed by anything that prefetches, and these are not idempotent.
+//
+// The confirm message is interpolated as a plain string attribute so templ escapes it.
+// Passing it as templ.ComponentScript emits it raw, and the double quotes inside then
+// terminate the attribute early — which produced broken markup and a dialog that never
+// appeared.
+templ adminPost(action, label, class, confirm string) {
+	<form
+		method="post"
+		action={ templ.SafeURL(action) }
+		if confirm != "" {
+			data-confirm={ confirm }
+		}
+	>
+		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		<button type="submit" class={ class }>{ label }</button>
+	</form>
+}
+
+// AccountForm creates or edits an account.
+//
+// It does not take a password. A new one is generated and shown once; an operator
+// choosing a password for somebody is choosing one they then know, and one that tends
+// to be reused across every account they create.
+templ AccountForm(f view.AccountForm) {
+	<form method="post" action={ accountFormAction(f) } class="mt-4 flex flex-col gap-4">
+		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		if f.Error != "" {
+			<div role="alert" class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm">
+				{ f.Error }
+			</div>
+		}
+		<div class="grid gap-4 sm:grid-cols-2">
+			<div>
+				<label for="account-name" class="form-label">Name</label>
+				<input
+					id="account-name"
+					name="display_name"
+					type="text"
+					class="field"
+					value={ f.DisplayName }
+					maxlength="80"
+					required
+					{ fieldState("account-name", f.NameError)... }
+				/>
+				if f.NameError != "" {
+					<p id="account-name-error" class="mt-1 text-xs text-danger">{ f.NameError }</p>
+				}
+			</div>
+			<div>
+				<label for="account-email" class="form-label">Email</label>
+				<input
+					id="account-email"
+					name="email"
+					type="email"
+					class="field"
+					value={ f.Email }
+					required
+					aria-describedby="account-email-hint"
+					{ fieldState("account-email", f.EmailError)... }
+				/>
+				<p id="account-email-hint" class="mt-1 text-xs text-ink-3">
+					Used to sign in. No mail is ever sent to it.
+				</p>
+				if f.EmailError != "" {
+					<p id="account-email-error" class="mt-1 text-xs text-danger">{ f.EmailError }</p>
+				}
+			</div>
+		</div>
+		<label class="flex items-start gap-2.5">
+			<input
+				type="checkbox"
+				name="is_operator"
+				value="1"
+				class="mt-0.5 size-4 rounded-sm border-line-strong accent-accent"
+				checked?={ f.IsOperator }
+			/>
+			<span class="text-sm">
+				<span class="font-medium">Make this account an owner.</span>
+				<span class="block text-xs text-ink-3">
+					Owners can create projects and accounts, reset passwords, and see every board.
+				</span>
+			</span>
+		</label>
+		<div class="flex items-center gap-2">
+			<button type="submit" class="btn-primary">
+				if f.IsNew() {
+					Create account
+				} else {
+					Save account
+				}
+			</button>
+			if !f.IsNew() {
+				<a href="/admin/users" class="btn-quiet">Cancel</a>
+			}
+		</div>
+	</form>
+}

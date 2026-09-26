@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/AzmainMahtab/chonkboard/internal/admin"
 	"github.com/AzmainMahtab/chonkboard/internal/auth"
 	authdomain "github.com/AzmainMahtab/chonkboard/internal/auth/domain"
 	"github.com/AzmainMahtab/chonkboard/internal/board"
@@ -87,6 +87,10 @@ func newHarness(t *testing.T) *harness {
 		service, projectService, hub, log)
 	cardService.UseMembers(projectService)
 
+	adminHandler := admin.NewHandler(
+		admin.NewService(service, projectService, log),
+		admin.HandlerConfig{AssetSuffix: "?v=test"}, log)
+
 	loginByIP := ratelimit.New(loginBurstPerIP, time.Minute)
 	loginByEmail := ratelimit.New(loginBurstPerEmail, time.Minute)
 	sessionCfg := middleware.SessionConfig{
@@ -108,6 +112,7 @@ func newHarness(t *testing.T) *harness {
 		Projects:        projectHandler,
 		BoardMgr:        boardHandler,
 		Cards:           cardHandler,
+		Admin:           adminHandler,
 		Session:         service,
 		SessionCfg:      sessionCfg,
 		LoginByIP:       loginByIP,
@@ -196,10 +201,12 @@ func sessionCookie(rec *httptest.ResponseRecorder) *http.Cookie {
 // shadows it.
 func bodyOf(rec *httptest.ResponseRecorder) string { return body(rec) }
 
-func body(rec *httptest.ResponseRecorder) string {
-	b, _ := io.ReadAll(rec.Result().Body)
-	return string(b)
-}
+// body returns the response body.
+//
+// Reads rec.Body directly rather than rec.Result().Body: the latter is a reader that is
+// consumed, so calling this twice on one recorder returned "" the second time — which
+// makes an assertion pass or fail depending on how many times the test happened to look.
+func body(rec *httptest.ResponseRecorder) string { return rec.Body.String() }
 
 func TestPublicRoutesNeedNoSession(t *testing.T) {
 	// These are deliberately outside the session middleware, so they cannot come
@@ -2306,5 +2313,672 @@ func TestLiveStatusIsOperatorOnly(t *testing.T) {
 		assert.Contains(t, withOne, `"rooms":1`)
 		assert.Contains(t, withOne, `"total_subscribers":1`)
 		assert.Contains(t, withOne, p.UUID)
+	})
+}
+
+// TestEveryRenderedFormCarriesACSRFToken is a regression guard for a bug that shipped
+// in phase 2 and survived four phases.
+//
+// The sign-out form in the topbar had no `csrf_token` field. `hx-headers` on <body>
+// only applies to HTMX requests, so a plain form post carried nothing and the CSRF
+// middleware refused it — **clicking "Sign out" was a 403**. Every unit and route test
+// passed, because every one of them sent the token explicitly.
+//
+// The check has to be on *rendered output*, not on source, and on every page: a form
+// added without a token looks correct in the template and fails only when a person
+// clicks it.
+func TestEveryRenderedFormCarriesACSRFToken(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Forms Board")
+	cookie, csrf := h.signIn(t, "owner@example.com")
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+	label := h.makeLabel(t, cookie, csrf, p, "bug", "rose")
+	base := "/projects/" + p.Slug
+
+	pages := map[string]string{
+		"the board":            base,
+		"project settings":     base + "/settings",
+		"the lane form":        base + "/lanes/new",
+		"the lane edit form":   base + "/lanes/" + lanes[0] + "/edit",
+		"the lane delete form": base + "/lanes/" + lanes[0] + "/delete",
+		"the label edit form":  base + "/labels/" + label + "/edit",
+		"the project list":     "/",
+		"the new project form": "/projects/new",
+		"the account page":     auth.AccountPath,
+		"the card modal":       "/cards/" + cardUUID,
+		"the card edit form":   "/cards/" + cardUUID + "/edit",
+		"the admin accounts":   "/admin/users",
+		"the admin projects":   "/admin/projects",
+	}
+
+	for name, path := range pages {
+		t.Run(name, func(t *testing.T) {
+			rec := h.get(path, cookie)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			forms := formsIn(body(rec))
+			require.NotEmpty(t, forms, "expected at least one form on %s", path)
+
+			for _, f := range forms {
+				if !strings.Contains(strings.ToLower(f.attrs), `method="post"`) {
+					continue
+				}
+				// An htmx-driven form sends the token as a header, via
+				// hx-headers on <body>.
+				if strings.Contains(f.attrs, "hx-") {
+					continue
+				}
+				assert.Contains(t, f.inner, `name="csrf_token"`,
+					"a plain POST form on %s has no CSRF field — clicking it would 403:\n<form%s>",
+					path, f.attrs)
+			}
+		})
+	}
+}
+
+// formBlock is one <form> element: its attributes and its contents.
+type formBlock struct{ attrs, inner string }
+
+// formsIn finds every form in rendered HTML.
+//
+// Scanned by hand rather than with a regexp: Go's RE2 has no negative lookahead, so
+// there is no expression for "everything up to the *next* </form>" — and a greedy one
+// would swallow several forms into a single match and then pass because one of them had
+// a token.
+func formsIn(html string) []formBlock {
+	var out []formBlock
+	rest := html
+	for {
+		open := strings.Index(rest, "<form")
+		if open < 0 {
+			return out
+		}
+		rest = rest[open+len("<form"):]
+
+		endAttrs := strings.Index(rest, ">")
+		if endAttrs < 0 {
+			return out
+		}
+		attrs := rest[:endAttrs]
+		rest = rest[endAttrs+1:]
+
+		close := strings.Index(rest, "</form>")
+		if close < 0 {
+			// Unclosed: record what there is, so a truncated page still fails
+			// loudly rather than silently passing.
+			out = append(out, formBlock{attrs: attrs, inner: rest})
+			return out
+		}
+		out = append(out, formBlock{attrs: attrs, inner: rest[:close]})
+		rest = rest[close+len("</form>"):]
+	}
+}
+
+func TestSigningOutFromTheTopbarWorks(t *testing.T) {
+	// The specific case the bug broke: the form the person actually clicks, posted
+	// exactly as a browser would — the token from the page, nothing in a header.
+	h := newBoardHarness(t)
+	h.addSuperAdmin(t, "owner@example.com")
+	cookie, _ := h.signIn(t, "owner@example.com")
+
+	page := body(h.get("/", cookie))
+	match := regexp.MustCompile(
+		`(?s)<form[^>]*action="/logout"[^>]*>.*?name="csrf_token" value="([^"]+)"`).
+		FindStringSubmatch(page)
+	require.Len(t, match, 2, "the sign-out form must carry a token")
+
+	rec := h.postForm(auth.LogoutPath, url.Values{"csrf_token": {match[1]}}, cookie)
+
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Equal(t, auth.LoginPath, rec.Header().Get("Location"))
+	assert.Equal(t, http.StatusSeeOther, h.get("/", cookie).Code, "the session is gone")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: the admin console.
+// ---------------------------------------------------------------------------
+
+// revealedPassword pulls the one-time password out of a console response.
+//
+// It matches the rendered <code> block, because that is the only place the value ever
+// exists — there is no API, no log line and no row to read it from.
+var revealedPassword = regexp.MustCompile(`tracking-wide"\s*>([A-Za-z0-9]{20})</code>`)
+
+func revealOf(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	m := revealedPassword.FindStringSubmatch(body(rec))
+	require.Len(t, m, 2, "no one-time password was revealed")
+	return m[1]
+}
+
+// TestTheOwnerFlowEndToEnd is the phase gate, in one test, in order.
+//
+// Create an account, note the one-time password, grant a project, watch that person sign
+// in and be forced to change it, reset it, watch their old session die, suspend them,
+// watch them locked out mid-session, reinstate them.
+func TestTheOwnerFlowEndToEnd(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	ownerCookie, _ := h.signIn(t, "owner@example.com")
+	ownerCSRF := h.csrfFor(t, ownerCookie)
+	p := h.makeProject(t, owner, "Shared Board")
+
+	// --- create ---
+	rec := h.postForm("/admin/users", url.Values{
+		"csrf_token":   {ownerCSRF},
+		"display_name": {"A Team Member"},
+		"email":        {"member@example.com"},
+	}, ownerCookie)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, body(rec), "copy this password now")
+	firstPassword := revealOf(t, rec)
+
+	t.Run("the password is revealed exactly once", func(t *testing.T) {
+		// Not in the page on a fresh load, and not anywhere it could be recovered:
+		// no redirect carries it, and nothing stores it.
+		assert.NotContains(t, body(h.get("/admin/users", ownerCookie)), firstPassword)
+
+		user, err := h.store.UserByEmail(h.ctx, "member@example.com")
+		require.NoError(t, err)
+		assert.NotEqual(t, firstPassword, user.PasswordHash,
+			"the password went through a hasher")
+		assert.True(t, user.MustChangePassword,
+			"a handed-over credential cannot stay in use")
+
+		// This harness uses password.NewFake, which encodes as "fake$<plaintext>" on
+		// purpose — so "the stored value does not contain the plaintext" cannot be
+		// asserted here and would pass for the wrong reason if it were. That property
+		// belongs to the real hasher: internal/shared/password asserts the PHC form,
+		// and the phase-7 walkthrough confirmed an Argon2id hash with the plaintext
+		// present in no table.
+	})
+
+	memberUser, err := h.store.UserByEmail(h.ctx, "member@example.com")
+	require.NoError(t, err)
+
+	// --- grant ---
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+
+	// --- they sign in, and are held ---
+	loginRec := h.postForm(auth.LoginPath, url.Values{
+		"email": {"member@example.com"}, "password": {firstPassword},
+	}, nil)
+	require.Equal(t, http.StatusSeeOther, loginRec.Code)
+	assert.Equal(t, auth.PasswordPath, loginRec.Header().Get("Location"),
+		"sign-in sends them straight to the password page")
+
+	memberCookie := sessionCookie(loginRec)
+	require.NotNil(t, memberCookie)
+
+	t.Run("they cannot reach the board until they replace it", func(t *testing.T) {
+		rec := h.get("/projects/"+p.Slug, memberCookie)
+		assert.Equal(t, http.StatusSeeOther, rec.Code)
+		assert.Equal(t, auth.PasswordPath, rec.Header().Get("Location"))
+	})
+
+	memberCSRF := h.csrfFor(t, memberCookie)
+	require.Equal(t, http.StatusOK, h.postForm(auth.PasswordPath, url.Values{
+		"csrf_token":       {memberCSRF},
+		"current_password": {firstPassword},
+		"new_password":     {"their own password"},
+	}, memberCookie).Code)
+	require.Equal(t, http.StatusOK, h.get("/projects/"+p.Slug, memberCookie).Code)
+
+	// --- reset ---
+	resetRec := h.postForm("/admin/users/"+memberUser.UUID+"/password",
+		url.Values{"csrf_token": {ownerCSRF}}, ownerCookie)
+	require.Equal(t, http.StatusOK, resetRec.Code)
+	assert.Contains(t, body(resetRec), "Password reset")
+	secondPassword := revealOf(t, resetRec)
+	assert.NotEqual(t, firstPassword, secondPassword)
+
+	t.Run("the reset kills every session they hold", func(t *testing.T) {
+		// A reset is what an operator does when a credential may be compromised. A
+		// session that outlived it would survive the very thing meant to end it.
+		rec := h.get("/projects/"+p.Slug, memberCookie)
+		assert.Equal(t, http.StatusSeeOther, rec.Code)
+		assert.Equal(t, auth.LoginPath, rec.Header().Get("Location"))
+	})
+
+	t.Run("the old password no longer works, the new one does", func(t *testing.T) {
+		assert.Equal(t, http.StatusUnauthorized, h.postForm(auth.LoginPath, url.Values{
+			"email": {"member@example.com"}, "password": {"their own password"},
+		}, nil).Code)
+
+		rec := h.postForm(auth.LoginPath, url.Values{
+			"email": {"member@example.com"}, "password": {secondPassword},
+		}, nil)
+		require.Equal(t, http.StatusSeeOther, rec.Code)
+		assert.Equal(t, auth.PasswordPath, rec.Header().Get("Location"),
+			"and it forces a change again")
+	})
+
+	// Sign in properly again, so there is a live session to suspend.
+	memberCookie, _ = h.signInWith(t, "member@example.com", secondPassword)
+	memberCSRF = h.csrfFor(t, memberCookie)
+	require.Equal(t, http.StatusOK, h.postForm(auth.PasswordPath, url.Values{
+		"csrf_token":       {memberCSRF},
+		"current_password": {secondPassword},
+		"new_password":     {"a third password"},
+	}, memberCookie).Code)
+	require.Equal(t, http.StatusOK, h.get("/projects/"+p.Slug, memberCookie).Code)
+
+	// --- suspend ---
+	t.Run("suspending locks them out mid-session", func(t *testing.T) {
+		rec := h.postForm("/admin/users/"+memberUser.UUID+"/suspend",
+			url.Values{"csrf_token": {ownerCSRF}}, ownerCookie)
+		require.Equal(t, http.StatusSeeOther, rec.Code)
+
+		board := h.get("/projects/"+p.Slug, memberCookie)
+		assert.Equal(t, http.StatusSeeOther, board.Code)
+		assert.Equal(t, auth.LoginPath, board.Header().Get("Location"))
+
+		assert.Equal(t, http.StatusForbidden, h.postForm(auth.LoginPath, url.Values{
+			"email": {"member@example.com"}, "password": {"a third password"},
+		}, nil).Code, "and they cannot sign in again")
+
+		assert.Contains(t, body(h.get("/admin/users", ownerCookie)), ">Suspended<")
+	})
+
+	// --- reinstate ---
+	t.Run("reinstating lets them back in", func(t *testing.T) {
+		require.Equal(t, http.StatusSeeOther, h.postForm(
+			"/admin/users/"+memberUser.UUID+"/reinstate",
+			url.Values{"csrf_token": {ownerCSRF}}, ownerCookie).Code)
+
+		rec := h.postForm(auth.LoginPath, url.Values{
+			"email": {"member@example.com"}, "password": {"a third password"},
+		}, nil)
+		require.Equal(t, http.StatusSeeOther, rec.Code)
+		assert.Equal(t, "/", rec.Header().Get("Location"))
+	})
+}
+
+// signInWith is signIn for a password other than the harness default.
+func (h *harness) signInWith(t *testing.T, email, password string) (*http.Cookie, string) {
+	t.Helper()
+	rec := h.postForm(auth.LoginPath, url.Values{
+		"email": {email}, "password": {password},
+	}, nil)
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+
+	cookie := sessionCookie(rec)
+	require.NotNil(t, cookie)
+	_, session, err := h.service.Authenticate(h.ctx, cookie.Value)
+	require.NoError(t, err)
+	return cookie, session.CSRFToken
+}
+
+// TestTheConsoleIsInvisibleToAMember is the wall. 404 everywhere, never 403 — a member
+// should not learn this surface exists, including from a redirect.
+func TestTheConsoleIsInvisibleToAMember(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Shared Board")
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+
+	cookie, csrf := h.signIn(t, "member@example.com")
+
+	reads := []string{
+		"/admin",
+		"/admin/users",
+		"/admin/projects",
+		"/admin/users/" + owner.UUID + "/edit",
+		"/debug/live",
+	}
+	for _, path := range reads {
+		t.Run("GET "+path, func(t *testing.T) {
+			assert.Equal(t, http.StatusNotFound, h.get(path, cookie).Code,
+				"404, never 403 and never a redirect that confirms the route exists")
+		})
+	}
+
+	writes := map[string]url.Values{
+		"/admin/users": {
+			"display_name": {"Sneaky"}, "email": {"sneaky@example.com"},
+			"is_operator": {"1"},
+		},
+		"/admin/users/" + owner.UUID:               {"display_name": {"X"}, "email": {"x@example.com"}},
+		"/admin/users/" + owner.UUID + "/password": {},
+		"/admin/users/" + owner.UUID + "/suspend":  {},
+		"/admin/users/" + owner.UUID + "/sign-out": {},
+		"/admin/users/" + memberUser.UUID:          {"display_name": {"Me"}, "email": {"member@example.com"}, "is_operator": {"1"}},
+	}
+	for path, form := range writes {
+		t.Run("POST "+path, func(t *testing.T) {
+			vals := form
+			vals.Set("csrf_token", csrf)
+			assert.Equal(t, http.StatusNotFound, h.postForm(path, vals, cookie).Code)
+		})
+	}
+
+	t.Run("and nothing changed", func(t *testing.T) {
+		users, err := h.store.ListUsers(h.ctx)
+		require.NoError(t, err)
+		assert.Len(t, users, 2, "no account was created")
+		for _, u := range users {
+			if u.Email == "member@example.com" {
+				assert.False(t, u.IsSuperAdmin(), "they did not promote themselves")
+			}
+			assert.True(t, u.CanSignIn(), "nobody was suspended")
+		}
+	})
+
+	t.Run("and the topbar offers no admin link", func(t *testing.T) {
+		assert.NotContains(t, body(h.get("/", cookie)), `href="/admin"`)
+
+		ownerCookie, _ := h.signIn(t, "owner@example.com")
+		assert.Contains(t, body(h.get("/", ownerCookie)), `href="/admin"`,
+			"but the operator's does")
+	})
+}
+
+func TestTheOperatorCannotLockThemselvesOut(t *testing.T) {
+	// Both of these would leave the installation with nobody able to administer it,
+	// recoverable only by editing the database by hand.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+
+	t.Run("suspending their own account", func(t *testing.T) {
+		rec := h.postForm("/admin/users/"+owner.UUID+"/suspend",
+			url.Values{"csrf_token": {csrf}}, cookie)
+
+		assert.Equal(t, http.StatusConflict, rec.Code)
+		assert.Contains(t, body(rec), "cannot suspend your own account")
+	})
+
+	t.Run("demoting the last owner", func(t *testing.T) {
+		rec := h.postForm("/admin/users/"+owner.UUID, url.Values{
+			"csrf_token": {csrf}, "display_name": {"Owner"},
+			"email": {"owner@example.com"}, // is_operator absent = demote
+		}, cookie)
+
+		assert.Equal(t, http.StatusConflict, rec.Code)
+		assert.Contains(t, body(rec), "only owner account")
+	})
+
+	t.Run("still an active operator afterwards", func(t *testing.T) {
+		reloaded, err := h.store.UserByUUID(h.ctx, owner.UUID)
+		require.NoError(t, err)
+		assert.True(t, reloaded.IsSuperAdmin())
+		assert.True(t, reloaded.CanSignIn())
+	})
+
+	t.Run("allowed once there is a second owner", func(t *testing.T) {
+		rec := h.postForm("/admin/users", url.Values{
+			"csrf_token": {csrf}, "display_name": {"Second Owner"},
+			"email": {"second@example.com"}, "is_operator": {"1"},
+		}, cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		second, err := h.store.UserByEmail(h.ctx, "second@example.com")
+		require.NoError(t, err)
+		require.True(t, second.IsSuperAdmin())
+
+		// Now demoting the first is fine.
+		assert.Equal(t, http.StatusSeeOther, h.postForm("/admin/users/"+owner.UUID,
+			url.Values{
+				"csrf_token": {csrf}, "display_name": {"Owner"},
+				"email": {"owner@example.com"},
+			}, cookie).Code)
+	})
+}
+
+func TestTheConsoleShowsTheStateOfEachAccount(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Shared Board")
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+
+	cookie, _ := h.signIn(t, "owner@example.com")
+	page := body(h.get("/admin/users", cookie))
+
+	assert.Contains(t, page, "owner@example.com")
+	assert.Contains(t, page, "member@example.com")
+	assert.Contains(t, page, ">Owner<", "the operator is marked")
+	assert.Contains(t, page, "only one owner account",
+		"and a single-owner installation is warned about — nobody could reset its password")
+
+	t.Run("a handover that has not completed is visible", func(t *testing.T) {
+		csrf := h.csrfFor(t, cookie)
+		rec := h.postForm("/admin/users", url.Values{
+			"csrf_token": {csrf}, "display_name": {"Fresh Account"},
+			"email": {"fresh@example.com"},
+		}, cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, body(rec), "Handover pending")
+	})
+}
+
+func TestSignOutEverywhereEndsSessionsWithoutChangingThePassword(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Shared Board")
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+
+	memberCookie, _ := h.signIn(t, "member@example.com")
+	require.Equal(t, http.StatusOK, h.get("/projects/"+p.Slug, memberCookie).Code)
+
+	ownerCookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, ownerCookie)
+
+	require.Equal(t, http.StatusSeeOther, h.postForm(
+		"/admin/users/"+memberUser.UUID+"/sign-out",
+		url.Values{"csrf_token": {csrf}}, ownerCookie).Code)
+
+	assert.Equal(t, http.StatusSeeOther, h.get("/projects/"+p.Slug, memberCookie).Code,
+		"their session is gone")
+
+	// The password is untouched, so they can simply sign in again.
+	rec := h.postForm(auth.LoginPath, url.Values{
+		"email": {"member@example.com"}, "password": {testPassword},
+	}, nil)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Equal(t, "/", rec.Header().Get("Location"))
+}
+
+func TestAdminUserValidation(t *testing.T) {
+	h := newBoardHarness(t)
+	h.addSuperAdmin(t, "owner@example.com")
+	h.addUser(t, "taken@example.com", authdomain.RoleMember)
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+
+	tests := map[string]struct {
+		form url.Values
+		want int
+		body string
+	}{
+		"a duplicate email": {
+			// Reported on the field, not as a headline: the person can fix it by
+			// typing a different address.
+			form: url.Values{"display_name": {"X"}, "email": {"taken@example.com"}},
+			want: http.StatusConflict, body: "is already taken",
+		},
+		"a malformed email": {
+			form: url.Values{"display_name": {"X"}, "email": {"not-an-address"}},
+			want: http.StatusBadRequest, body: "",
+		},
+		"no name": {
+			form: url.Values{"display_name": {"   "}, "email": {"new@example.com"}},
+			want: http.StatusBadRequest, body: "",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			form := tc.form
+			form.Set("csrf_token", csrf)
+
+			rec := h.postForm("/admin/users", form, cookie)
+
+			assert.Equal(t, tc.want, rec.Code)
+			if tc.body != "" {
+				assert.Contains(t, body(rec), tc.body)
+			}
+			// What was typed comes back, rather than being thrown away.
+			assert.Contains(t, body(rec), tc.form.Get("email"))
+			assert.NotRegexp(t, revealedPassword, body(rec),
+				"a refused create must not reveal a password")
+		})
+	}
+}
+
+func TestTheAdminProjectsPageAnswersWhoCanReachWhat(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+
+	granted := h.makeProject(t, owner, "Granted Board")
+	h.makeProject(t, owner, "Owner Only Board")
+	h.grant(t, owner, granted, memberUser, projectdomain.RoleMember)
+
+	cookie, _ := h.signIn(t, "owner@example.com")
+	page := body(h.get("/admin/projects", cookie))
+
+	assert.Contains(t, page, "Granted Board")
+	assert.Contains(t, page, "Owner Only Board")
+
+	// Grants are listed against the board they are on. Both accounts share a display
+	// name in this harness, so the address is what distinguishes them — which is why
+	// the chip carries it as a title.
+	assert.Contains(t, page, `title="member@example.com"`,
+		"the granted member is listed against the board")
+	assert.Contains(t, page, `title="owner@example.com"`)
+	assert.Contains(t, page, ">manager<")
+	assert.Contains(t, page, ">member<")
+
+	// Every board has at least its creator, who is granted manager when it is
+	// created — so there is no grant-less board to show the empty state for.
+	assert.NotContains(t, page, "Nobody has been granted this board.")
+}
+
+// TestNoRenderedPageUsesAnInlineEventHandler guards a whole class of bug that only a
+// browser would reveal.
+//
+// The CSP is `script-src 'self' 'unsafe-eval'` with no `'unsafe-inline'`, so an
+// `onsubmit=` or `onchange=` attribute is blocked and silently never runs. Four delete
+// confirmations never appeared, and the member role picker — an `onchange` that submitted
+// its form — did nothing at all. None of it produced an error the server could see, so
+// every server-side test passed.
+//
+// Behaviour of that kind belongs in board.js, which is `'self'` and therefore allowed.
+func TestNoRenderedPageUsesAnInlineEventHandler(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Handlers Board")
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+
+	cookie, csrf := h.signIn(t, "owner@example.com")
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+	label := h.makeLabel(t, cookie, csrf, p, "bug", "rose")
+	base := "/projects/" + p.Slug
+
+	paths := map[string]string{
+		"the board":            base,
+		"project settings":     base + "/settings",
+		"the lane form":        base + "/lanes/new",
+		"the lane delete form": base + "/lanes/" + lanes[0] + "/delete",
+		"the label edit form":  base + "/labels/" + label + "/edit",
+		"the card modal":       "/cards/" + cardUUID,
+		"the card edit form":   "/cards/" + cardUUID + "/edit",
+		"the project list":     "/",
+		"the account page":     auth.AccountPath,
+		"the admin accounts":   "/admin/users",
+		"the admin projects":   "/admin/projects",
+	}
+
+	// Any attribute whose name begins with "on" and is followed by "=" is an inline
+	// handler. Matched loosely on purpose: a new one should fail this test whatever it
+	// is called.
+	inline := regexp.MustCompile(`(?i)\son[a-z]+\s*=`)
+
+	for name, path := range paths {
+		t.Run(name, func(t *testing.T) {
+			rec := h.get(path, cookie)
+			require.Equal(t, http.StatusOK, rec.Code)
+			assertNoInlineHandlers(t, path, inline, body(rec))
+		})
+	}
+
+	t.Run("the login page", func(t *testing.T) {
+		// Anonymously: an authenticated request to /login is redirected away.
+		rec := h.get(auth.LoginPath, nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assertNoInlineHandlers(t, auth.LoginPath, inline, body(rec))
+	})
+}
+
+// assertNoInlineHandlers reports every inline handler on a page at once, so one run
+// names them all rather than stopping at the first.
+//
+// Alpine's own directives (x-data, @click, :class) deliberately do not match: they are
+// not `on*` attributes, and Alpine evaluates them with new Function — which is the one
+// reason the CSP carries 'unsafe-eval'.
+func assertNoInlineHandlers(t *testing.T, path string, inline *regexp.Regexp, page string) {
+	t.Helper()
+	found := inline.FindAllString(page, -1)
+	assert.Empty(t, found,
+		"%s carries inline event handler(s) %v — the CSP blocks them, so they silently "+
+			"never run. Use a delegated listener in board.js.",
+		path, found)
+}
+
+func TestTheCSPForbidsInlineScript(t *testing.T) {
+	// The other half of the guard above: if this ever gains 'unsafe-inline', the test
+	// above stops meaning anything, so the policy itself is asserted.
+	h := newBoardHarness(t)
+	h.addSuperAdmin(t, "owner@example.com")
+
+	csp := h.get(auth.LoginPath, nil).Header().Get("Content-Security-Policy")
+
+	require.Contains(t, csp, "script-src")
+	assert.NotContains(t, csp, "unsafe-inline",
+		"inline handlers and inline <script> must stay blocked")
+	assert.Contains(t, csp, "form-action 'self'")
+	assert.Contains(t, csp, "base-uri 'none'")
+	assert.Contains(t, csp, "object-src 'none'")
+}
+
+func TestDelegatedBehavioursAreDeclaredWhereTheyAreNeeded(t *testing.T) {
+	// The replacement for the inline handlers: a data attribute the delegated listener
+	// in board.js picks up. Asserting the markup carries it is what stops the
+	// behaviour being quietly dropped when a template is rewritten.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Handlers Board")
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+
+	cookie, csrf := h.signIn(t, "owner@example.com")
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+	h.makeLabel(t, cookie, csrf, p, "bug", "rose")
+
+	t.Run("destructive actions ask first", func(t *testing.T) {
+		for name, path := range map[string]string{
+			"card delete":   "/cards/" + cardUUID,
+			"label delete":  "/projects/" + p.Slug + "/settings",
+			"account reset": "/admin/users",
+		} {
+			assert.Contains(t, body(h.get(path, cookie)), "data-confirm=",
+				"%s should ask before it happens", name)
+		}
+	})
+
+	t.Run("the role picker submits on change", func(t *testing.T) {
+		page := body(h.get("/projects/"+p.Slug+"/settings", cookie))
+		assert.Contains(t, page, "data-autosubmit")
+		assert.Contains(t, page, "<noscript>",
+			"and there is a button for when the script has not loaded")
 	})
 }

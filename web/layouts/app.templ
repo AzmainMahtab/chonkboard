@@ -46,6 +46,7 @@ templ topbar(p view.Page) {
 			<div class="flex items-center gap-2">
 				<a href="/account" class="text-xs text-ink-2 hover:text-ink">{ p.CurrentUser.DisplayName }</a>
 				<form method="post" action="/logout">
+					<input type="hidden" name="csrf_token" value={ p.CSRFToken }/>
 					<button type="submit" class="btn-quiet text-xs">Sign out</button>
 				</form>
 			</div>

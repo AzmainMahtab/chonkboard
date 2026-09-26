@@ -154,7 +154,7 @@ templ dangerZone(s view.ProjectSettings) {
 					<form
 						method="post"
 						action={ templ.SafeURL("/projects/" + s.Project.Slug + "/delete") }
-						onsubmit="return confirm('Delete this project and everything on it? This cannot be undone.')"
+						data-confirm="Delete this project and everything on it? This cannot be undone."
 					>
 						<input type="hidden" name="csrf_token" value={ csrf(ctx) }/>
 						<button type="submit" class="btn-danger">Delete</button>

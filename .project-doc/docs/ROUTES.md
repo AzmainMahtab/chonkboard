@@ -172,21 +172,35 @@ The service, store and tests exist; there is no UI until a card can carry a labe
 | PATCH | `/labels/{l}` | fragment |
 | DELETE | `/labels/{l}` | 204 |
 
-## Super admin only — *phase 7*
+## The admin console — **built**
+
+**Every route here answers 404 to anybody but the operator** — never 403, and never a
+redirect. `GET /admin` checks before it redirects for exactly that reason: a bare redirect
+confirms the surface exists, which is what the policy is for.
+
+Project create, archive and delete live on the project routes above rather than being
+duplicated here; `/admin/projects` links to them.
 
 | Method | Path | Returns | Notes |
 |---|---|---|---|
-| GET | `/admin` | page | users, projects, who has access to what |
-| GET | `/admin/users` | page | |
-| POST | `/admin/users` | fragment | **reveals the generated password exactly once** |
-| PATCH | `/admin/users/{u}` | fragment | |
-| POST | `/admin/users/{u}/password` | fragment | one-time reveal; revokes all that user's sessions |
-| POST | `/admin/users/{u}/suspend` | fragment | revokes all sessions immediately |
-| POST | `/admin/users/{u}/reinstate` | fragment | |
-| GET | `/admin/projects` | page | |
-| POST | `/admin/projects` | redirect | |
-| POST | `/admin/projects/{p}/archive` | fragment | |
-| DELETE | `/admin/projects/{p}` | redirect | cascades to lanes, cards, labels, grants |
+| GET | `/admin` | 302 `/admin/users` | checks first |
+| GET | `/admin/users` | page | every account, with live sessions, boards, and pending handovers |
+| POST | `/admin/users` | page | **reveals the generated password exactly once** |
+| GET | `/admin/users/{u}/edit` | page | the list, with that account in the form |
+| POST | `/admin/users/{u}` | 303 | name, address, and the global role |
+| POST | `/admin/users/{u}/password` | page | **one-time reveal; revokes every session that account holds** |
+| POST | `/admin/users/{u}/suspend` | 303 | revokes every session immediately |
+| POST | `/admin/users/{u}/reinstate` | 303 | |
+| POST | `/admin/users/{u}/sign-out` | 303 | ends their sessions without changing the password |
+| GET | `/admin/projects` | page | every board and who can reach it |
+
+**The two reveal routes return a page, not a redirect.** A redirect would have to carry the
+password in a query string or a flash, and both persist it. The credential exists in that
+one response and nowhere else — not in the database, not in a log line, not in history.
+
+Refusals worth knowing: suspending your own account is **409**, and so is demoting the last
+owner who can still sign in. Both would leave the installation with nobody able to
+administer it.
 
 ## The move contract — **built**
 

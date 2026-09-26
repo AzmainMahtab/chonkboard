@@ -2,6 +2,7 @@ package pages
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/a-h/templ"
@@ -49,3 +50,6 @@ func errorID(field string) string { return field + "-error" }
 // Through view rather than shared/authctx, so the UI layer never reaches a domain
 // type — see the note in web/view/csrf.go.
 func csrf(ctx context.Context) string { return view.CSRF(ctx) }
+
+// itoa keeps strconv out of the templates.
+func itoa(n int) string { return strconv.Itoa(n) }

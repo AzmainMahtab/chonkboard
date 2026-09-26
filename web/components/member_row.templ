@@ -47,7 +47,7 @@ templ memberRoleControl(projectSlug string, m view.Member, canGrantManager bool)
 				id={ "role-" + m.UserUUID }
 				name="role"
 				class="field w-auto py-1 text-xs"
-				onchange="this.form.requestSubmit()"
+				data-autosubmit
 			>
 				<option value="member" selected?={ m.Role == "member" }>Member</option>
 				<option value="manager" selected?={ m.Role == "manager" }>Manager</option>

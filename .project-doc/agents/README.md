@@ -155,7 +155,18 @@ under "Traps", and you should read that section in full at least once.
     disconnected, so merely resuming the stream leaves it quietly stale.
 40. **Never test a stream with an `httptest.ResponseRecorder`** — reading its Body while
     the handler writes is a data race. Use `httptest.NewServer`.
-41. **`web/` must never import a `*/domain` package.** The CSRF token reaches a
+41. **Never write an inline event handler.** The CSP has no `'unsafe-inline'`, so
+    `onsubmit=` and `onchange=` are blocked and silently never run. Put the behaviour in
+    `board.js` behind a `data-` attribute.
+42. **Every plain `<form method="post">` needs its own hidden `csrf_token`.**
+    `hx-headers` on `<body>` covers HTMX requests only.
+43. **Audit rendered output, not just responses.** Both bugs phase 7 found were in the
+    HTML a browser receives, and every status-code test passed.
+44. **The admin console answers 404 to anybody but the operator** — never 403, and never a
+    redirect that confirms the route exists.
+45. **A one-time password is rendered into the response that created it.** Never a
+    redirect: a query string or a flash would persist it.
+46. **`web/` must never import a `*/domain` package.** The CSRF token reaches a
     fragment through `view.CSRF`, not `authctx`, for exactly this reason. There is
     no gate enforcing it, so check with
     `go list -deps ./web/... | grep internal/.*/domain`.

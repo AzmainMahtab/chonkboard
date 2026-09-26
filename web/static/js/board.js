@@ -214,6 +214,33 @@
      element that no Sortable is bound to yet. */
   document.body.addEventListener("htmx:oobAfterSwap", bindLanes);
 
+  /* Delegated handlers for behaviour that would otherwise be an inline attribute.
+
+     Our CSP is `script-src 'self' 'unsafe-eval'` with no 'unsafe-inline', so an
+     onsubmit= or onchange= attribute is blocked and silently never runs — a delete
+     confirmation that never appears, and a select that never submits. Both were live
+     bugs, invisible to every server-side test, because a blocked handler produces no
+     error the server can see.
+
+     These live in this file instead, which is 'self' and therefore allowed. */
+
+  /* A form marked data-confirm asks before it submits. */
+  document.body.addEventListener("submit", function (e) {
+    var form = e.target.closest("form[data-confirm]");
+    if (!form) return;
+    if (!window.confirm(form.getAttribute("data-confirm"))) e.preventDefault();
+  });
+
+  /* A control marked data-autosubmit submits its form when it changes, so a role
+     picker takes effect without a separate button. The <noscript> button beside it is
+     the path when this file has not loaded. */
+  document.body.addEventListener("change", function (e) {
+    var control = e.target.closest("[data-autosubmit]");
+    if (!control || !control.form) return;
+    if (control.form.requestSubmit) control.form.requestSubmit();
+    else control.form.submit();
+  });
+
   document.body.addEventListener("htmx:sseError", function () {
     streamUp = false;
     toast("Live updates dropped. Reconnecting…");
