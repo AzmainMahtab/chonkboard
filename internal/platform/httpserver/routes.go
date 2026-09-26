@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 
+	"github.com/AzmainMahtab/chonkboard/internal/admin"
 	"github.com/AzmainMahtab/chonkboard/internal/auth"
 	"github.com/AzmainMahtab/chonkboard/internal/board"
 	"github.com/AzmainMahtab/chonkboard/internal/card"
@@ -28,6 +29,7 @@ type Deps struct {
 	Projects *project.Handler
 	BoardMgr *board.Handler
 	Cards    *card.Handler
+	Admin    *admin.Handler
 
 	// Auth owns the session, so it owns everything about who is asking.
 	Auth       *auth.Handler
@@ -88,6 +90,21 @@ func Router(d Deps) http.Handler {
 			// Operator-only observability. Not on /healthz: room counts say how
 			// many projects are in use and who is watching them.
 			pr.Get("/debug/live", liveStatus(d.Hub))
+
+			// ---- The operator's console. Every handler refuses anybody else with
+			// 404 rather than 403: a member should not learn this surface exists.
+			pr.Route(admin.BasePath, func(ar chi.Router) {
+				ar.Get("/", d.Admin.Index)
+				ar.Get("/users", d.Admin.Users)
+				ar.Post("/users", d.Admin.CreateUser)
+				ar.Get("/users/{user}/edit", d.Admin.EditUser)
+				ar.Post("/users/{user}", d.Admin.UpdateUser)
+				ar.Post("/users/{user}/password", d.Admin.ResetPassword)
+				ar.Post("/users/{user}/suspend", d.Admin.Suspend)
+				ar.Post("/users/{user}/reinstate", d.Admin.Reinstate)
+				ar.Post("/users/{user}/sign-out", d.Admin.SignOut)
+				ar.Get("/projects", d.Admin.Projects)
+			})
 
 			pr.Get(auth.AccountPath, d.Auth.AccountPage)
 			pr.Get(auth.PasswordPath, d.Auth.AccountPage)
@@ -173,6 +190,7 @@ func mustHaveDeps(d Deps) {
 		"Projects":     d.Projects == nil,
 		"BoardMgr":     d.BoardMgr == nil,
 		"Cards":        d.Cards == nil,
+		"Admin":        d.Admin == nil,
 		"Session":      d.Session == nil,
 		"LoginByIP":    d.LoginByIP == nil,
 		"LoginByEmail": d.LoginByEmail == nil,

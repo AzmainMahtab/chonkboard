@@ -138,7 +138,7 @@ templ cardModalFooter(projectSlug string, d view.CardDetail) {
 			<form
 				method="post"
 				action={ templ.SafeURL("/cards/" + d.Card.UUID + "/delete") }
-				onsubmit="return confirm('Delete this card? Its comments and attachments go with it.')"
+				data-confirm="Delete this card? Its comments and attachments go with it."
 			>
 				<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
 				<button type="submit" class="btn-quiet text-danger hover:bg-danger/10">Delete</button>

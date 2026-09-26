@@ -316,3 +316,20 @@ func (s *Store) DeleteExpiredSessions(ctx context.Context, before time.Time) (in
 		map[string]any{"before": database.NewTime(before)})
 	return n, database.MapError(err, "prune sessions")
 }
+
+// CountLiveSessionsForUser reports how many usable sessions an account holds.
+//
+// Live means neither revoked nor expired — the same test the session middleware
+// applies, expressed in SQL so the console can show it without loading every row.
+func (s *Store) CountLiveSessionsForUser(ctx context.Context, userUUID string, at time.Time) (int, error) {
+	var n int
+	if _, err := database.GetNamed(ctx, s.tx.Reader(ctx), &n, `
+		SELECT count(*) FROM sessions
+		WHERE user_uuid = :user_uuid
+		  AND revoked_at IS NULL
+		  AND expires_at > :at`,
+		map[string]any{"user_uuid": userUUID, "at": database.NewTime(at)}); err != nil {
+		return 0, err
+	}
+	return n, nil
+}

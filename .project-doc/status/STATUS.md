@@ -13,8 +13,8 @@ Phase definitions and gates: `../plan/ROADMAP.md`.
 | 4 | Cards core | **done** | yes, every move case walked with curl |
 | 5 | Rich card | **done** | yes, including the attachment-leak check |
 | 6 | Live board | **done** | yes, two live streams, 10ms median |
-| 7 | Admin console | **next** | — |
-| 8 | Harden and ship | not started | — |
+| 7 | Admin console | **done** | yes, the whole owner flow walked |
+| 8 | Harden and ship | **next** | — |
 
 Repository: `/home/odin/repo/chonkboard`, its own git repo. **Nothing is committed
 yet** — the working tree is complete and `.gitignore` is correct, but the first
@@ -58,9 +58,62 @@ commit was left to the owner.
   a lane added, renamed, reordered or deleted — tells every tab to re-fetch. A tab that
   was disconnected re-syncs on reconnect rather than sitting stale.
 
-What is missing is the admin console (creating accounts, resetting passwords,
-suspending people) and shipping — backups, graceful shutdown hardening, the 404/500
-pages, and the responsive pass.
+- **The owner runs the installation from `/admin`.** Create an account and get a password
+  shown exactly once, hand it over, grant a board, reset the password (which ends every
+  session that person holds), suspend somebody mid-session, reinstate them. The console
+  also answers "who has access to what" across every board.
+
+What is left is shipping: backups, the 404/500 pages, a request timeout, the responsive
+pass at 390/768/1440, and **the browser check that has been outstanding since phase 0**.
+
+---
+
+## Phase 7 — done
+
+### Built
+
+- **`internal/auth/accounts.go`** — the operator's account operations: create with a
+  generated password, reset, suspend, reinstate, edit, sign out everywhere.
+- **`internal/admin/{service,handler}.go`** — **no `domain`, no `store`**, against the
+  plan's four packages. Admin owns no entities; what it owns is the composition and the
+  dashboard's read model.
+- **`internal/project/directory.go`** — every board and who can reach it.
+- **`web/components/reveal.templ`** and the two console pages.
+
+### Gate: met
+
+`make check` run three times, `make check-postgres` green. The whole owner flow walked
+against a running binary — full table in `../plan/ROADMAP.md`. The rows that matter:
+
+| Check | Result |
+|---|---|
+| **The one-time password, on a fresh load / in the log / in the database** | **absent, absent, absent** |
+| Reset a password | the person's live session dies immediately |
+| Suspend mid-session | locked out on the next request |
+| Suspending yourself, or demoting the last owner | 409 |
+| The console as a member, every route | **404 — never 403, never a redirect** |
+
+### Two bugs that had already shipped
+
+Both were invisible to every server-side test, and both were found by auditing **rendered
+output** rather than code or response codes.
+
+**The sign-out button had been a 403 since phase 2.** Its form carried no `csrf_token` —
+`hx-headers` on `<body>` covers HTMX requests only. Every test passed because every test
+sent the token explicitly. Now guarded by a test over thirteen rendered pages, verified by
+reintroducing the bug and watching it fail.
+
+**The CSP silently disabled every inline event handler.** `script-src 'self' 'unsafe-eval'`
+has no `'unsafe-inline'`, so four delete confirmations never appeared and the member role
+picker's `onchange` never fired — **changing somebody's project role did nothing**. Moved to
+delegated listeners in `board.js`. Two tests hold it: no rendered page carries an `on*=`
+attribute, and the CSP still forbids inline. Neither means anything without the other.
+
+### The browser check is now overdue
+
+It has been outstanding since phase 0, and it has now caught two real bugs *by proxy* —
+both were things only a browser would have shown. The drag guard and the two new delegated
+listeners are all unexercised. Phase 8 should close it.
 
 ---
 
@@ -493,39 +546,33 @@ Nothing from phase 0 remains on any route.
 | | |
 |---|---|
 | Binary | ~15 MB (static, `CGO_ENABLED=0`, stripped) — grew with the SQLite driver |
-| Stylesheet | **7.2 KB gzipped** |
+| Stylesheet | **7.3 KB gzipped** |
 | JavaScript | **52 KB gzipped**, four vendored libraries plus `board.js` |
 | Migrations | 5 files, 237 lines of SQL |
-| Go files | 96 hand-written |
-| templ components | 21 |
-| Tests | 365 default + 9 PostgreSQL-tagged |
-| Aggregate coverage | 72.1% of statements |
+| Go files | 100 hand-written |
+| templ components | 23 |
+| Tests | 377 default + 9 PostgreSQL-tagged |
+| Aggregate coverage | 72.6% of statements |
 | Live update latency | 10 ms median, measured over ten moves |
 
 ---
 
-## Phase 7 — next
+## Phase 8 — next
 
-The admin console: creating accounts, the one-time password reveal, resetting a
-password, suspending and reinstating people, and the operator's view of every project
-and who has access to what.
+Shipping. What is left:
 
-Most of the service layer exists. `auth.Service` already has the bootstrap,
-`RevokeSessionsForUser` and `ChangeOwnPassword`; `auth.Store` has user CRUD;
-`domain.GeneratePassword` produces the confusable-free one-time password; and
-`chonkboard seed user` already performs the whole create-and-reveal flow on the command
-line. What is missing is a service method for an operator resetting *somebody else's*
-password, and the pages.
+- **The browser check.** Outstanding since phase 0 and now the highest-value item on the
+  list: the drag guard, the two delegated listeners (`data-confirm`, `data-autosubmit`), the
+  modal focus trap, and the SSE swap mid-drag. Two real bugs were caught by proxy in phase
+  7; this closes the class.
+- **Backups.** `VACUUM INTO` on a ticker, `BACKUP_KEEP` newest retained, plus `make backup`.
+  The only correct way to snapshot a live WAL database.
+- **A request timeout**, exempting the SSE route. `LimitBody` landed early in phase 5;
+  this is the other half.
+- **404 and 500 pages** that are pages rather than a toast fragment.
+- **The responsive pass** at 390 / 768 / 1440, and the accessibility sweep: focus
+  restoration, reduced motion, the keyboard path end to end.
+- **`docker compose up` from an empty volume** yielding a working board.
 
-Three things already decided and worth not re-deriving:
+The gate is `make check` green and that last line true.
 
-- A generated password is **shown exactly once**, never emailed, never logged, and
-  `must_change_password` is set. Losing it means resetting it — that is the recovery
-  path, and the reason no plaintext copy exists anywhere.
-- A reset **revokes every session that user holds**, or a compromised session survives
-  the reset meant to end it.
-- Suspending revokes every session immediately, and the session middleware already
-  refuses a suspended user on every request.
-
-The gate is the whole flow end to end: create an account, hand over the credentials,
-grant a project, reset the password, suspend, reinstate.

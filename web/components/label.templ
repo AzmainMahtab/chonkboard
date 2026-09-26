@@ -14,7 +14,7 @@ templ LabelRow(projectSlug string, l view.Label) {
 		<form
 			method="post"
 			action={ templ.SafeURL("/projects/" + projectSlug + "/labels/" + l.UUID + "/delete") }
-			onsubmit="return confirm('Delete this label? It is removed from every card that carries it.')"
+			data-confirm="Delete this label? It is removed from every card that carries it."
 		>
 			<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
 			<button

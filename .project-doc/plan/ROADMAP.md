@@ -19,8 +19,8 @@ nothing to broadcast until something can change.
 | 4 | Cards core | **done** (2026-09-26) |
 | 5 | Rich card | **done** (2026-09-26) |
 | 6 | Live board | **done** (2026-09-26) |
-| 7 | Admin console | next |
-| 8 | Harden and ship | not started |
+| 7 | Admin console | **done** (2026-09-26) |
+| 8 | Harden and ship | next |
 
 ---
 
@@ -511,28 +511,69 @@ it is what stops a card being swapped out from under the hand holding it.
 
 ---
 
-## Phase 7 — Admin console
+## Phase 7 — Admin console · done
 
-**Why here.** Requirements R3, R4, R5. It needs users, projects, and grants to
-already exist, and it is the owner's surface rather than a member's.
+**Why here.** Requirements R3, R4, R5. It needs users, projects and grants to already
+exist, and it is the owner's surface rather than a member's.
 
-**Build**
+**Delivered**
 
-- `internal/admin/{domain,service,handler,store}`.
-- `GET /admin` — a dashboard: users, projects, who has access to what.
-- User create with a generated password **revealed exactly once**, never emailed,
-  never logged, never stored in plaintext.
-- Password reset with the same one-time reveal; sets `must_change_password` and
-  **revokes every session that user holds**.
-- Suspend and reinstate. A suspended user's sessions die immediately.
-- Project create and archive; grant and revoke access; promote and demote a
-  project manager.
-- `web/pages/admin_users.templ`, `admin_projects.templ`.
+- `internal/auth/accounts.go` — the operator's account operations: create with a generated
+  password, reset, suspend, reinstate, edit, sign out everywhere
+- `internal/admin/{service,handler}.go` — **no `domain`, no `store`**, against the plan's
+  four packages. Admin owns no entities; what it owns is the composition and the
+  dashboard's read model. A domain here would be empty and a store would be a second way
+  to reach tables that already have one
+- `internal/project/directory.go` — the operator's read model over projects: every board
+  and who can reach it
+- `web/pages/admin_users.templ`, `admin_projects.templ`,
+  `web/components/reveal.templ` — the console, and the one-time reveal
+- `GET /admin` checks before it redirects, so it cannot confirm the route exists
 
-**Gate.** The whole owner flow end to end: create an account, note the one-time
-password, grant a project, watch that user log in and be forced to change the
-password, reset it, watch their old session die, suspend them, watch them be
-locked out mid-session. A generated password appears in no log line.
+**Gate — met.** `make check` three times and `make check-postgres` green. The whole owner
+flow walked against a running binary:
+
+| Check | Result |
+|---|---|
+| Create an account | password revealed once, `must_change_password` set |
+| **The plaintext on a fresh page load** | **absent** |
+| **The plaintext in any log line** | **absent** — log carries uuids only |
+| **The plaintext in any database row** | **absent** — stored as `$argon2id$v=19$…` |
+| The console before handover completes | shows "Handover pending" |
+| Grant a project, they sign in | 303 straight to `/account/password` |
+| The board while they are held | 303 back to the password page |
+| After they choose their own | board 200 |
+| The console then | 1 session, 1 board, no pending badge |
+| **Reset their password** | new password revealed once, different from the first |
+| **Their live session after the reset** | **303 to /login — it died** |
+| The old password | 401; the new one works and forces a change again |
+| **Suspend them mid-session** | **next request 303 to /login**; sign-in 403 |
+| Reinstate | they sign in again, straight to `/` |
+| Suspending your own account | 409, "cannot suspend your own account" |
+| Demoting the last owner | 409, "only owner account" |
+| A single-owner installation | warned about on the console |
+| The console, every route, as a member | **404 — never 403, never a redirect** |
+| Their topbar | no admin link; the owner's has one |
+| After all of it | no account created, nobody promoted, nobody suspended |
+
+**Two bugs that had shipped, both invisible to every server-side test.** Both were found
+by auditing *rendered output* rather than code or responses:
+
+1. **The sign-out button had been a 403 since phase 2.** Its form carried no
+   `csrf_token`; `hx-headers` on `<body>` covers HTMX requests only. Every test passed
+   because every test sent the token explicitly. Now guarded by a test that fetches
+   thirteen pages and asserts every plain POST form carries the field — verified by
+   reintroducing the bug and watching it fail.
+2. **The CSP silently disabled every inline event handler.** `script-src 'self'
+   'unsafe-eval'` has no `'unsafe-inline'`, so four delete confirmations never appeared and
+   the member role picker's `onchange` never fired — **changing somebody's project role did
+   nothing at all**. Moved to delegated listeners in `board.js` behind `data-confirm` and
+   `data-autosubmit`, with two tests: no rendered page carries an `on*=` attribute, and the
+   CSP still forbids inline. Neither test means anything without the other.
+
+**Still not verified in a browser.** The drag guard, and now also the two delegated
+listeners. Phase 8 should close this — it is the last outstanding item from phase 0 and it
+has now caught two real bugs by proxy.
 
 ---
 

@@ -139,3 +139,12 @@ func labelFormAction(projectSlug string, f view.LabelForm) templ.SafeURL {
 	}
 	return templ.SafeURL("/projects/" + projectSlug + "/labels/" + f.UUID)
 }
+
+// accountFormAction is where an account form posts: the collection to create in, or the
+// account itself to update.
+func accountFormAction(f view.AccountForm) templ.SafeURL {
+	if f.IsNew() {
+		return templ.SafeURL("/admin/users")
+	}
+	return templ.SafeURL("/admin/users/" + f.UUID)
+}

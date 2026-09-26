@@ -467,3 +467,61 @@ a reconnect handler written this way silently does nothing.
 
 List both on the element. Caught by reading the two lines next to each other rather than
 by a test, which is worth noting: nothing in the suite would have failed.
+
+## 2026-09-26 — the sign-out button was a 403 for five phases
+
+The topbar's form had no `csrf_token` field. `hx-headers` on `<body>` applies to HTMX
+requests only, so a plain form post carried nothing and the CSRF middleware refused it.
+
+Every test passed, because every test sent the token explicitly. The bug lived in the
+*rendered output* of a template, which nothing was looking at.
+
+The guard is now a test that fetches thirteen pages and asserts every non-htmx
+`<form method="post">` in the rendered HTML contains a `csrf_token` field. Verified by
+reintroducing the bug and watching it fail on every page — a regression test that does not
+catch the regression is worth nothing.
+
+## 2026-09-26 — a CSP without 'unsafe-inline' silently disables every inline handler
+
+`script-src 'self' 'unsafe-eval'` blocks `onsubmit=` and `onchange=` attributes. The
+browser reports it to its own console and nowhere else, so:
+
+- four `onsubmit="return confirm(…)"` delete guards never appeared, and
+- the member role picker's `onchange="this.form.requestSubmit()"` never fired, which meant
+  **changing somebody's project role did nothing at all**.
+
+Both shipped. Both are invisible to every server-side test, because a blocked handler
+produces no request and therefore no observable difference.
+
+Delegated listeners in a file the CSP allows, plus a test asserting no rendered page
+carries an `on*=` attribute, and a second asserting the CSP still forbids inline — the two
+only work as a pair.
+
+## 2026-09-26 — templ treats an `on*` attribute as a script, not as a string
+
+`onsubmit={ "return confirm(" + s + ")" }` does not compile: templ requires a
+`templ.ComponentScript` there. Passing one emits the value **raw**, so double quotes inside
+it terminate the HTML attribute early and produce broken markup — which is what happened
+before the handler moved out of the attribute altogether.
+
+Worth knowing as a signpost: if an attribute needs escaping logic to be safe, it is
+probably the wrong place for the behaviour.
+
+## 2026-09-26 — `httptest.ResponseRecorder.Result().Body` is consumed
+
+`io.ReadAll(rec.Result().Body)` returns the body once and `""` every time after. A test
+helper built that way makes an assertion pass or fail depending on how many times the test
+happened to look at the response, which is the worst kind of flake because it looks
+deterministic.
+
+`rec.Body.String()` reads the buffer directly and can be called any number of times.
+
+## 2026-09-26 — an assertion against a test double can be vacuous
+
+`assert.NotContains(user.PasswordHash, plaintext)` looks like it proves the password was
+hashed. Under `password.Fake`, which encodes as `fake$<plaintext>` on purpose, it fails —
+and under a double that encoded differently it would have *passed without proving
+anything*.
+
+The property belongs where the real hasher runs. Check the shape of the double before
+asserting a security property through it.
