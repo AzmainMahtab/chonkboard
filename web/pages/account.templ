@@ -1,0 +1,86 @@
+package pages
+
+import (
+	"github.com/AzmainMahtab/chonkboard/web/layouts"
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// AccountPage lets a signed-in person change their own password. It is the only
+// self-service action in the application.
+templ AccountPage(p view.Page, f view.PasswordForm) {
+	@layouts.App(p) {
+		<div class="mx-auto w-full max-w-md px-4 py-10">
+			<h1 class="text-xl font-semibold tracking-tight">Your account</h1>
+			<p class="mt-1.5 text-sm text-ink-3">{ p.CurrentUser.Email }</p>
+			if f.MustChange {
+				<div
+					role="alert"
+					class="mt-6 rounded-card border border-warn/35 bg-warn/10 px-3 py-2.5 text-sm"
+				>
+					<strong class="font-semibold">Choose your own password.</strong>
+					<span class="text-ink-2">
+						The one you were given cannot be used beyond this page.
+					</span>
+				</div>
+			}
+			<form
+				method="post"
+				action="/account/password"
+				class="mt-6 flex flex-col gap-4"
+			>
+				<input type="hidden" name="csrf_token" value={ p.CSRFToken }/>
+				if f.Error != "" {
+					<div
+						role="alert"
+						class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm"
+					>
+						{ f.Error }
+					</div>
+				}
+				if f.Done {
+					<div
+						role="status"
+						class="rounded-card border border-ok/35 bg-ok/10 px-3 py-2 text-sm"
+					>
+						Password changed. Every other browser has been signed out.
+					</div>
+				}
+				<div class="flex flex-col gap-1.5">
+					<label for="current_password" class="form-label">Current password</label>
+					<input
+						id="current_password"
+						name="current_password"
+						type="password"
+						class="field"
+						autocomplete="current-password"
+						required
+						{ fieldAttrs("current_password", f.CurrentError)... }
+					/>
+					if f.CurrentError != "" {
+						<p id={ errorID("current_password") } class="text-xs text-danger">{ f.CurrentError }</p>
+					}
+				</div>
+				<div class="flex flex-col gap-1.5">
+					<label for="new_password" class="form-label">New password</label>
+					<input
+						id="new_password"
+						name="new_password"
+						type="password"
+						class="field"
+						autocomplete="new-password"
+						minlength="12"
+						required
+						{ fieldAttrs("new_password", f.NewError, "new-password-hint")... }
+					/>
+					<p id="new-password-hint" class="text-xs text-ink-3">
+						At least 12 characters. Length matters more than symbols.
+					</p>
+					if f.NewError != "" {
+						<p id={ errorID("new_password") } class="text-xs text-danger">{ f.NewError }</p>
+					}
+				</div>
+				<button type="submit" class="btn-primary mt-1">Change password</button>
+			</form>
+		</div>
+	}
+}

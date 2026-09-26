@@ -1,0 +1,206 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/AzmainMahtab/chonkboard/web/components"
+	"github.com/AzmainMahtab/chonkboard/web/layouts"
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// ProjectSettingsPage is where a manager changes the shape of a board.
+//
+// Every control on it sits behind a manager-or-above check at the route as well, so
+// a member who reaches this URL gets a 403 rather than a page with disabled buttons.
+templ ProjectSettingsPage(p view.Page, s view.ProjectSettings) {
+	@layouts.App(p) {
+		<div class="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+			@settingsHeader(s)
+			if s.Saved != "" {
+				<div role="status" class="mt-5 rounded-card border border-ok/35 bg-ok/10 px-3 py-2 text-sm">
+					{ s.Saved }
+				</div>
+			}
+			@settingsSection("Lanes", laneSectionHint(len(s.Lanes))) {
+				<ul class="flex flex-col gap-2">
+					for i, lane := range s.Lanes {
+						@components.LaneRow(s.Project.Slug, lane, i, len(s.Lanes))
+					}
+				</ul>
+				if len(s.Lanes) < 20 {
+					<a
+						href={ templ.SafeURL("/projects/" + s.Project.Slug + "/lanes/new") }
+						class="btn-quiet mt-3"
+					>Add lane</a>
+				} else {
+					<p class="mt-3 text-xs text-ink-3">
+						This board has as many lanes as it can hold.
+					</p>
+				}
+			}
+			@settingsSection("People", "Who can open this board and work on its cards.") {
+				<ul class="flex flex-col gap-2">
+					for _, m := range s.Members {
+						@components.MemberRow(s.Project.Slug, m, s.CanGrantManager)
+					}
+				</ul>
+				@components.AddMemberForm(s.Project.Slug, s.Candidates, s.CanGrantManager)
+			}
+			@settingsSection("Details", "The name people see, and the address of the board.") {
+				@components.ProjectForm(
+					s.Form,
+					"/projects/"+s.Project.Slug+"/settings",
+					"Save details",
+				)
+			}
+			if s.CanArchive || s.CanDelete {
+				@dangerZone(s)
+			}
+		</div>
+	}
+}
+
+templ settingsHeader(s view.ProjectSettings) {
+	<nav class="mb-5 flex items-center gap-2 text-sm">
+		<a href="/" class="text-ink-3 hover:text-ink">Projects</a>
+		<span class="text-ink-3" aria-hidden="true">/</span>
+		<a
+			href={ templ.SafeURL("/projects/" + s.Project.Slug) }
+			class="text-ink-3 hover:text-ink"
+		>{ s.Project.Name }</a>
+		<span class="text-ink-3" aria-hidden="true">/</span>
+		<span class="font-medium">Settings</span>
+	</nav>
+	<div class="flex flex-wrap items-baseline justify-between gap-3">
+		<h1 class="text-xl font-semibold tracking-tight">{ s.Project.Name }</h1>
+		<a href={ templ.SafeURL("/projects/" + s.Project.Slug) } class="btn-quiet">
+			Back to the board
+		</a>
+	</div>
+}
+
+// settingsSection is one band of the page. A named component rather than repeated
+// markup, because there are four of them and they must stay identical.
+templ settingsSection(title, hint string) {
+	<section class="mt-8 border-t border-line pt-6">
+		<h2 class="text-sm font-semibold tracking-tight">{ title }</h2>
+		if hint != "" {
+			<p class="mt-0.5 text-xs text-ink-3">{ hint }</p>
+		}
+		<div class="mt-4">
+			{ children... }
+		</div>
+	</section>
+}
+
+templ dangerZone(s view.ProjectSettings) {
+	<section class="mt-8 rounded-lane border border-danger/30 bg-danger/5 p-4">
+		<h2 class="text-sm font-semibold tracking-tight">Danger zone</h2>
+		<div class="mt-4 flex flex-col gap-4">
+			if s.CanArchive {
+				<div class="flex flex-wrap items-center justify-between gap-3">
+					<div>
+						<p class="text-sm font-medium">
+							if s.Project.IsArchived {
+								Restore this project
+							} else {
+								Archive this project
+							}
+						</p>
+						<p class="text-xs text-ink-3">
+							if s.Project.IsArchived {
+								It becomes visible in the project list again.
+							} else {
+								It leaves the project list. Nothing is lost, and you can restore it.
+							}
+						</p>
+					</div>
+					<form
+						method="post"
+						action={ templ.SafeURL("/projects/" + s.Project.Slug + "/archive") }
+					>
+						<input type="hidden" name="csrf_token" value={ csrf(ctx) }/>
+						<button type="submit" class="btn-quiet">
+							if s.Project.IsArchived {
+								Restore
+							} else {
+								Archive
+							}
+						</button>
+					</form>
+				</div>
+			}
+			if s.CanDelete {
+				<div class="flex flex-wrap items-center justify-between gap-3 border-t border-danger/20 pt-4">
+					<div>
+						<p class="text-sm font-medium">Delete this project</p>
+						<p class="text-xs text-ink-3">
+							Every lane, card, comment, attachment and grant goes with it.
+							This cannot be undone — archive instead if you might want it back.
+						</p>
+					</div>
+					<form
+						method="post"
+						action={ templ.SafeURL("/projects/" + s.Project.Slug + "/delete") }
+						onsubmit="return confirm('Delete this project and everything on it? This cannot be undone.')"
+					>
+						<input type="hidden" name="csrf_token" value={ csrf(ctx) }/>
+						<button type="submit" class="btn-danger">Delete</button>
+					</form>
+				</div>
+			}
+		</div>
+	</section>
+}
+
+// LanePage is the lane create/edit form on its own page, so it is linkable and
+// works with no JavaScript.
+templ LanePage(p view.Page, projectSlug, projectName string, f view.LaneForm) {
+	@layouts.App(p) {
+		<div class="mx-auto w-full max-w-md px-4 py-10">
+			@lanePageNav(projectSlug, projectName)
+			<h1 class="text-xl font-semibold tracking-tight">
+				if f.IsNew() {
+					Add a lane
+				} else {
+					Edit lane
+				}
+			</h1>
+			<div class="mt-6">
+				@components.LaneSettings(projectSlug, f)
+			</div>
+		</div>
+	}
+}
+
+// LaneDeletePage asks where a lane's cards should go.
+templ LaneDeletePage(
+	p view.Page, projectSlug, projectName string,
+	lane view.Lane, others []view.Lane, errMessage string,
+) {
+	@layouts.App(p) {
+		<div class="mx-auto w-full max-w-md px-4 py-10">
+			@lanePageNav(projectSlug, projectName)
+			<h1 class="text-xl font-semibold tracking-tight">Delete lane</h1>
+			<div class="mt-6">
+				@components.LaneDeleteForm(projectSlug, lane, others, errMessage)
+			</div>
+		</div>
+	}
+}
+
+templ lanePageNav(projectSlug, projectName string) {
+	<nav class="mb-6 flex items-center gap-2 text-sm">
+		<a
+			href={ templ.SafeURL("/projects/" + projectSlug + "/settings") }
+			class="text-ink-3 hover:text-ink"
+		>&larr; { projectName } settings</a>
+	</nav>
+}
+
+// laneSectionHint states the count, so a manager can see at a glance whether they
+// are near the ceiling.
+func laneSectionHint(n int) string {
+	return "The columns of this board, in order. " +
+		strconv.Itoa(n) + " of 20 used."
+}

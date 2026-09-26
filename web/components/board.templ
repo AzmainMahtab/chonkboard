@@ -1,0 +1,51 @@
+package components
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// Board is the whole lane rail. It is also the reconnect target: a structural
+// change (lane added, renamed, reordered, deleted) broadcasts a board-dirty
+// signal and the client re-fetches this fragment whole.
+templ Board(b view.Board) {
+	<div
+		id="board"
+		data-project-uuid={ b.ProjectUUID }
+		hx-get={ "/projects/" + b.ProjectSlug + "/board" }
+		hx-trigger="sse:board-dirty"
+		hx-swap="outerHTML"
+		class="flex h-[calc(100dvh-3rem)] items-start gap-3 overflow-x-auto px-3 py-3 sm:px-5"
+	>
+		for _, l := range b.Lanes {
+			@Lane(b, l)
+		}
+		if b.CanManage {
+			@addLane(b)
+		}
+	</div>
+}
+
+// addLane is a real link to a real page, not a modal fetch.
+//
+// Adding a lane is a form with five fields and a palette; it deserves a page that
+// can be linked, bookmarked and submitted with no JavaScript. The same form is
+// reusable in a modal later without changing the route.
+templ addLane(b view.Board) {
+	<a
+		href={ templ.SafeURL("/projects/" + b.ProjectSlug + "/lanes/new") }
+		class="w-[17rem] shrink-0 rounded-lane border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-ink-3 hover:border-accent hover:text-ink-2"
+	>+ Add a lane</a>
+}
+
+// LiveRegion holds the SSE connection for a board. Every card mutation arrives
+// as a lane-updated event whose payload is an hx-swap-oob lane; hx-swap="none"
+// means the payload is used only for its out-of-band parts, which is what we
+// want. Structural changes arrive as board-dirty and re-fetch the whole board.
+templ LiveRegion(projectUUID string) {
+	<div
+		id="live"
+		hx-ext="sse"
+		sse-connect={ "/projects/" + projectUUID + "/events" }
+		sse-swap="lane-updated"
+		hx-swap="none"
+		hidden
+	></div>
+}

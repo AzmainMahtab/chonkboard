@@ -1,0 +1,46 @@
+package pages
+
+import (
+	"github.com/AzmainMahtab/chonkboard/web/components"
+	"github.com/AzmainMahtab/chonkboard/web/layouts"
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+templ BoardPage(p view.Page, b view.Board) {
+	@layouts.App(p) {
+		<div class="flex h-10 items-center gap-3 border-b border-line px-3 sm:px-5">
+			<a href="/" class="text-xs text-ink-3 hover:text-ink">Projects</a>
+			<span class="text-line" aria-hidden="true">/</span>
+			<h1 class="text-sm font-semibold tracking-tight">{ b.ProjectName }</h1>
+			if b.CanManage {
+				<a
+					href={ templ.SafeURL("/projects/" + b.ProjectSlug + "/settings") }
+					class="ml-auto text-xs text-ink-3 hover:text-ink"
+				>Settings</a>
+			}
+		</div>
+		@components.LiveRegion(b.ProjectUUID)
+		if len(b.Lanes) == 0 {
+			@emptyBoard(b)
+		} else {
+			@components.Board(b)
+		}
+	}
+}
+
+// emptyBoard covers a board whose every lane has been deleted. Reachable only by a
+// manager deleting down to the last one, which the service refuses — so this is a
+// safety net rather than a normal state.
+templ emptyBoard(b view.Board) {
+	<div class="mx-auto max-w-md px-4 py-16 text-center">
+		<p class="text-sm font-medium">This board has no lanes.</p>
+		if b.CanManage {
+			<a
+				href={ templ.SafeURL("/projects/" + b.ProjectSlug + "/lanes/new") }
+				class="btn-primary mt-4"
+			>Add the first lane</a>
+		} else {
+			<p class="mt-1 text-sm text-ink-3">A manager needs to add one.</p>
+		}
+	</div>
+}

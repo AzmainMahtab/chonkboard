@@ -1,0 +1,75 @@
+package components
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// CardForm creates or edits a card.
+//
+// A real form with a real action, so it submits with no JavaScript. When htmx is
+// present the response replaces the lane it belongs to, which is why the action
+// posts to the lane rather than to the board.
+templ CardForm(projectSlug string, f view.CardForm) {
+	@Modal(cardFormTitle(f)) {
+		@ModalHeader(cardFormTitle(f))
+		<form
+			method="post"
+			action={ cardFormAction(projectSlug, f) }
+			class="flex flex-col gap-4 px-4 py-4"
+		>
+			<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+			if f.Error != "" {
+				<div role="alert" class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm">
+					{ f.Error }
+				</div>
+			}
+			if f.IsNew() && f.LaneName != "" {
+				<p class="text-xs text-ink-3">Adding to <strong class="font-medium text-ink-2">{ f.LaneName }</strong></p>
+			}
+			<div>
+				<label for="card-title" class="form-label">Title</label>
+				<input
+					id="card-title"
+					name="title"
+					type="text"
+					class="field"
+					value={ f.Title }
+					maxlength="200"
+					required
+					autofocus
+					{ fieldState("card-title", f.TitleError)... }
+				/>
+				if f.TitleError != "" {
+					<p id="card-title-error" class="mt-1 text-xs text-danger">{ f.TitleError }</p>
+				}
+			</div>
+			<div>
+				<label for="card-description" class="form-label">
+					Description <span class="font-normal text-ink-3">optional, markdown</span>
+				</label>
+				<textarea
+					id="card-description"
+					name="description"
+					class="field min-h-28 resize-y font-mono text-xs"
+					maxlength="20000"
+					{ fieldState("card-description", f.DescError)... }
+				>{ f.Description }</textarea>
+				if f.DescError != "" {
+					<p id="card-description-error" class="mt-1 text-xs text-danger">{ f.DescError }</p>
+				}
+			</div>
+			<div class="flex items-center gap-2">
+				<button type="submit" class="btn-primary">
+					if f.IsNew() {
+						Add card
+					} else {
+						Save card
+					}
+				</button>
+				<button
+					type="button"
+					class="btn-quiet"
+					@click="open = false; $nextTick(() => $root.remove())"
+				>Cancel</button>
+			</div>
+		</form>
+	}
+}

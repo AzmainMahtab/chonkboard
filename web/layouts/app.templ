@@ -1,0 +1,54 @@
+package layouts
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// App wraps every signed-in page. The CSRF token is attached once, here, so
+// every HTMX request in the app carries it without per-form plumbing.
+templ App(p view.Page) {
+	@Base(p) {
+		<body
+			class="min-h-dvh bg-ground text-ink"
+			hx-headers={ `{"X-CSRF-Token":"` + p.CSRFToken + `"}` }
+		>
+			<a
+				href="#main"
+				class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-card focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:shadow-pop"
+			>Skip to content</a>
+			@topbar(p)
+			<main id="main" class="mx-auto w-full">
+				{ children... }
+			</main>
+			<div id="modal" class="contents"></div>
+			<div
+				id="toasts"
+				class="pointer-events-none fixed bottom-4 right-4 z-40 flex w-80 flex-col gap-2"
+				aria-live="polite"
+				aria-atomic="false"
+			></div>
+			<script src={ "/static/js/board.js" + p.AssetSuffix } defer></script>
+		</body>
+	}
+}
+
+templ topbar(p view.Page) {
+	<header class="sticky top-0 z-30 border-b border-line bg-surface/85 backdrop-blur">
+		<div class="flex h-12 items-center gap-4 px-3 sm:px-5">
+			<a href="/" class="flex items-center gap-2 text-sm font-semibold tracking-tight">
+				<span class="grid size-6 place-items-center rounded-card bg-accent text-2xs font-bold text-on-accent">CB</span>
+				<span class="hidden sm:inline">Chonkboard</span>
+			</a>
+			<nav class="flex-1" aria-label="Main">
+				<a href="/" class="rounded-card px-2 py-1 text-sm text-ink-2 hover:bg-surface-2 hover:text-ink">Projects</a>
+				if p.CurrentUser.IsSuperUser {
+					<a href="/admin" class="rounded-card px-2 py-1 text-sm text-ink-2 hover:bg-surface-2 hover:text-ink">Admin</a>
+				}
+			</nav>
+			<div class="flex items-center gap-2">
+				<a href="/account" class="text-xs text-ink-2 hover:text-ink">{ p.CurrentUser.DisplayName }</a>
+				<form method="post" action="/logout">
+					<button type="submit" class="btn-quiet text-xs">Sign out</button>
+				</form>
+			</div>
+		</div>
+	</header>
+}

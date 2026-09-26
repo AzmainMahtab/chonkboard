@@ -1,0 +1,102 @@
+package components
+
+import (
+	"strings"
+
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// CardModal is a card's detail view.
+//
+// Deliberately thin for now: title, description, where it is, who made it, and its
+// history. Labels, due date, priority, assignee, comments and attachments arrive in
+// phase 5 and each becomes a band in this panel.
+templ CardModal(projectSlug string, d view.CardDetail) {
+	@Modal(d.Card.Title) {
+		@ModalHeader(d.Card.Title)
+		<div class="flex flex-col gap-5 px-4 py-4">
+			<dl class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-3">
+				<div class="flex items-baseline gap-1.5">
+					<dt>Lane</dt>
+					<dd class="font-medium text-ink-2">{ d.LaneName }</dd>
+				</div>
+				<div class="flex items-baseline gap-1.5">
+					<dt>Added by</dt>
+					<dd class="font-medium text-ink-2">{ d.CreatedBy }</dd>
+				</div>
+				<div class="flex items-baseline gap-1.5">
+					<dt>Added</dt>
+					<dd><time datetime={ d.CreatedAt.Format("2006-01-02T15:04:05Z07:00") }>{ d.CreatedAt.Format("2 Jan 2006") }</time></dd>
+				</div>
+				if d.IsArchived {
+					<dd class="rounded-pill bg-surface-3 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide">
+						Archived
+					</dd>
+				}
+			</dl>
+			if strings.TrimSpace(d.Description) != "" {
+				<div>
+					<h3 class="form-label">Description</h3>
+					<div class="whitespace-pre-wrap rounded-card border border-line bg-surface-2 px-3 py-2 text-sm leading-relaxed">
+						{ d.Description }
+					</div>
+				</div>
+			} else {
+				<p class="text-sm text-ink-3">No description.</p>
+			}
+			if len(d.History) > 0 {
+				<div>
+					<h3 class="form-label">History</h3>
+					<ol class="flex flex-col gap-1.5 text-xs text-ink-3">
+						for _, entry := range d.History {
+							<li class="flex flex-wrap items-baseline gap-1.5">
+								<span class="font-medium text-ink-2">{ entry.Actor }</span>
+								<span>{ activityVerb(entry) }</span>
+								<time
+									class="ml-auto tabular-nums"
+									datetime={ entry.At.Format("2006-01-02T15:04:05Z07:00") }
+								>{ entry.At.Format("2 Jan, 15:04") }</time>
+							</li>
+						}
+					</ol>
+				</div>
+			}
+		</div>
+		<footer class="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">
+			<a
+				href={ templ.SafeURL("/cards/" + d.Card.UUID + "/edit") }
+				class="btn-quiet"
+				hx-get={ "/cards/" + d.Card.UUID + "/edit" }
+				hx-target="#modal"
+				hx-swap="innerHTML"
+			>Edit</a>
+			@cardArchiveButton(d)
+			<span class="flex-1"></span>
+			if d.CanDelete {
+				<form
+					method="post"
+					action={ templ.SafeURL("/cards/" + d.Card.UUID + "/delete") }
+					onsubmit="return confirm('Delete this card? Its comments and attachments go with it.')"
+				>
+					<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+					<button type="submit" class="btn-quiet text-danger hover:bg-danger/10">Delete</button>
+				</form>
+			}
+		</footer>
+	}
+}
+
+// cardArchiveButton offers the reversible way off the board, which is what should be
+// reached for before delete.
+templ cardArchiveButton(d view.CardDetail) {
+	<form method="post" action={ templ.SafeURL("/cards/" + d.Card.UUID + "/archive") }>
+		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		if d.IsArchived {
+			<input type="hidden" name="archived" value="0"/>
+			<button type="submit" class="btn-quiet">Restore</button>
+		} else {
+			<input type="hidden" name="archived" value="1"/>
+			<button type="submit" class="btn-quiet">Archive</button>
+		}
+	</form>
+}

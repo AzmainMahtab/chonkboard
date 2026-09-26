@@ -1,0 +1,25 @@
+package layouts
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// Plain wraps a page with no signed-in chrome: no nav, no user menu, no
+// board.js. It is the shell for the login page, where there is no session to
+// build a topbar from and nothing on the page needs JavaScript.
+//
+// Not loading board.js here is deliberate: the login form must work regardless,
+// and shipping the drag-and-drop bundle to an unauthenticated page is 52KB spent
+// on nothing.
+templ Plain(p view.Page) {
+	@Base(p) {
+		<body class="grid min-h-dvh place-items-center bg-ground px-4 py-10 text-ink">
+			<main id="main" class="w-full max-w-sm">
+				{ children... }
+			</main>
+			<div
+				id="toasts"
+				class="pointer-events-none fixed bottom-4 right-4 z-40 flex w-80 flex-col gap-2"
+				aria-live="polite"
+			></div>
+		</body>
+	}
+}

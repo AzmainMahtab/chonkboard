@@ -1,0 +1,125 @@
+package components
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// MemberRow is one person's access to a project.
+templ MemberRow(projectSlug string, m view.Member, canGrantManager bool) {
+	<li class="flex items-center gap-3 rounded-card border border-line bg-surface px-3 py-2.5">
+		<span
+			class="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-2xs font-semibold text-ink-2"
+			aria-hidden="true"
+		>{ initials(m.DisplayName) }</span>
+		<div class="min-w-0 flex-1">
+			<p class="truncate text-sm font-medium">
+				{ m.DisplayName }
+				if m.IsSelf {
+					<span class="font-normal text-ink-3">(you)</span>
+				}
+			</p>
+			<p class="truncate text-xs text-ink-3">{ m.Email }</p>
+		</div>
+		if m.Suspended {
+			<span class="shrink-0 rounded-pill bg-danger/10 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-danger">
+				Suspended
+			</span>
+		}
+		@memberRoleControl(projectSlug, m, canGrantManager)
+		@memberRevokeControl(projectSlug, m)
+	</li>
+}
+
+// memberRoleControl changes somebody's role, or states it flatly when the caller
+// may not change it.
+//
+// Promoting to manager is the operator's alone — a manager who could mint peers
+// could escalate the board out of the owner's control — so a project manager sees
+// the role as text, not a control.
+templ memberRoleControl(projectSlug string, m view.Member, canGrantManager bool) {
+	if canGrantManager && !m.IsSelf {
+		<form
+			method="post"
+			action={ templ.SafeURL("/projects/" + projectSlug + "/members/" + m.UserUUID) }
+			class="shrink-0"
+		>
+			<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+			<label class="sr-only" for={ "role-" + m.UserUUID }>Role for { m.DisplayName }</label>
+			<select
+				id={ "role-" + m.UserUUID }
+				name="role"
+				class="field w-auto py-1 text-xs"
+				onchange="this.form.requestSubmit()"
+			>
+				<option value="member" selected?={ m.Role == "member" }>Member</option>
+				<option value="manager" selected?={ m.Role == "manager" }>Manager</option>
+			</select>
+			<noscript>
+				<button type="submit" class="btn-quiet mt-1 px-2 text-xs">Set</button>
+			</noscript>
+		</form>
+	} else {
+		<span class="shrink-0 rounded-pill bg-surface-2 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-ink-3">
+			{ m.Role }
+		</span>
+	}
+}
+
+// memberRevokeControl removes somebody's access.
+//
+// Not offered for your own grant: a manager revoking themselves would lock
+// themselves out of a board they are responsible for, and the operator has the
+// admin console for that.
+templ memberRevokeControl(projectSlug string, m view.Member) {
+	if m.IsSelf {
+		<span class="shrink-0 px-2 text-xs text-ink-3" aria-hidden="true">&mdash;</span>
+	} else {
+		<form
+			method="post"
+			action={ templ.SafeURL("/projects/" + projectSlug + "/members/" + m.UserUUID + "/revoke") }
+			class="shrink-0"
+		>
+			<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+			<button
+				type="submit"
+				class="btn-quiet px-2 text-xs text-danger hover:bg-danger/10"
+			>Remove</button>
+		</form>
+	}
+}
+
+// AddMemberForm grants somebody access to a project.
+templ AddMemberForm(projectSlug string, candidates []view.Candidate, canGrantManager bool) {
+	if len(candidates) == 0 {
+		<p class="mt-3 text-sm text-ink-3">
+			Everybody with an account already has access to this board.
+		</p>
+	} else {
+		<form
+			method="post"
+			action={ templ.SafeURL("/projects/" + projectSlug + "/members") }
+			class="mt-3 flex flex-wrap items-end gap-2"
+		>
+			<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+			<div class="min-w-48 flex-1">
+				<label for="add-member" class="form-label">Add somebody</label>
+				<select id="add-member" name="user_uuid" class="field" required>
+					<option value="">Choose a person…</option>
+					for _, c := range candidates {
+						<option value={ c.UUID }>{ c.DisplayName } — { c.Email }</option>
+					}
+				</select>
+			</div>
+			if canGrantManager {
+				<div>
+					<label for="add-role" class="form-label">As</label>
+					<select id="add-role" name="role" class="field w-auto">
+						<option value="member">Member</option>
+						<option value="manager">Manager</option>
+					</select>
+				</div>
+			} else {
+				<input type="hidden" name="role" value="member"/>
+			}
+			<button type="submit" class="btn-primary">Grant access</button>
+		</form>
+	}
+}

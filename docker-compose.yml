@@ -1,0 +1,26 @@
+# One service. SQLite means the database is a file in the volume, so there is no
+# second container to wait for, no healthcheck ordering, and no network to secure.
+services:
+  app:
+    build:
+      context: .
+    container_name: chonkboard
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SESSION_TTL: ${SESSION_TTL:-168h}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-10485760}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-6h}
+      BACKUP_KEEP: ${BACKUP_KEEP:-28}
+    volumes:
+      - chonkboard-data:/data
+
+volumes:
+  chonkboard-data:

@@ -1,0 +1,207 @@
+@import "tailwindcss";
+
+/* Explicit rather than relying on v4's auto-detection: the class strings live
+   both in .templ markup and in Go helpers that return literal class names. */
+@source "../layouts/*.templ";
+@source "../pages/*.templ";
+@source "../components/*.templ";
+@source "../layouts/*.go";
+@source "../pages/*.go";
+@source "../components/*.go";
+@source "../static/js/*.js";
+
+/* ---------------------------------------------------------------------------
+   Chonkboard tokens. Every value here is a token; no hex codes in markup.
+   Contrast measured for every shipping ink/ground pair — see
+   .claude-project/design/DESIGN-GUIDELINES.md for the table.
+   --------------------------------------------------------------------------- */
+@theme {
+  /* Type. System stack: 0 bytes, no FOUT, native rendering on every target. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono",
+               Menlo, Consolas, monospace;
+
+  /* Type ladder — 1.2 minor third, tight for a dense tool. */
+  --text-2xs: 0.6875rem;   --text-2xs--line-height: 1rem;
+  --text-xs:  0.75rem;     --text-xs--line-height: 1.125rem;
+  --text-sm:  0.8125rem;   --text-sm--line-height: 1.25rem;
+  --text-base:0.9375rem;   --text-base--line-height: 1.4rem;
+  --text-lg:  1.125rem;    --text-lg--line-height: 1.6rem;
+  --text-xl:  1.375rem;    --text-xl--line-height: 1.8rem;
+  --text-2xl: 1.75rem;     --text-2xl--line-height: 2.1rem;
+
+  /* Light scheme (default). */
+  --color-ground:      #FBFAF9;
+  --color-surface:     #FFFFFF;
+  --color-surface-2:   #F2F0EE;
+  --color-surface-3:   #E9E6E2;
+  --color-line:        #E3E0DC;
+  --color-line-strong: #949089;
+  --color-ink:         #1A1817;
+  --color-ink-2:       #5C5854;
+  --color-ink-3:       #8A857F;
+  --color-accent:      #C2410C;
+  --color-accent-hover:#9A3412;
+  --color-on-accent:   #FFFFFF;
+  --color-danger:      #B42318;
+  --color-warn:        #A16207;
+  --color-ok:          #15803D;
+  --color-info:        #1D4ED8;
+
+  /* Lane tints — assigned by the manager, quiet on purpose. */
+  --color-lane-slate:  #64748B;
+  --color-lane-blue:   #1D4ED8;
+  --color-lane-teal:   #0F766E;
+  --color-lane-green:  #15803D;
+  --color-lane-amber:  #A16207;
+  --color-lane-rose:   #BE123C;
+  --color-lane-violet: #6D28D9;
+
+  --radius-card:  0.375rem;
+  --radius-lane:  0.5rem;
+  --radius-pill:  9999px;
+
+  --shadow-card:      0 1px 2px 0 rgb(26 24 23 / 0.06), 0 1px 3px 0 rgb(26 24 23 / 0.04);
+  --shadow-card-drag: 0 8px 24px -4px rgb(26 24 23 / 0.18), 0 2px 6px 0 rgb(26 24 23 / 0.10);
+  --shadow-pop:       0 12px 32px -8px rgb(26 24 23 / 0.22), 0 2px 8px 0 rgb(26 24 23 / 0.08);
+
+  /* Motion. Two curves, three durations. Nothing else. */
+  --ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
+  --ease-in-out:    cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast:  120ms;
+  --duration-base:  200ms;
+  --duration-slow:  320ms;
+}
+
+/* Dark scheme. Only tokens are redefined — never a component rule. */
+@layer theme {
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --color-ground:      #16161A;
+      --color-surface:     #1F1F24;
+      --color-surface-2:   #26262C;
+      --color-surface-3:   #2F2F36;
+      --color-line:        #32323A;
+      --color-line-strong: #74707B;
+      --color-ink:         #EDEAE6;
+      --color-ink-2:       #A8A39C;
+      --color-ink-3:       #7C7872;
+      --color-accent:      #FB923C;
+      --color-accent-hover:#FDBA74;
+      --color-on-accent:   #1A1817;
+      --color-danger:      #F87171;
+      --color-warn:        #FBBF24;
+      --color-ok:          #4ADE80;
+      --color-info:        #7DA9FF;
+      --color-lane-slate:  #94A3B8;
+      --color-lane-blue:   #7DA9FF;
+      --color-lane-teal:   #4FD1C5;
+      --color-lane-green:  #4ADE80;
+      --color-lane-amber:  #FBBF24;
+      --color-lane-rose:   #FB7185;
+      --color-lane-violet: #A78BFA;
+      --shadow-card:      0 1px 2px 0 rgb(0 0 0 / 0.40);
+      --shadow-card-drag: 0 8px 24px -4px rgb(0 0 0 / 0.60), 0 2px 6px 0 rgb(0 0 0 / 0.40);
+      --shadow-pop:       0 12px 32px -8px rgb(0 0 0 / 0.70), 0 2px 8px 0 rgb(0 0 0 / 0.45);
+    }
+  }
+  :root[data-theme="dark"] {
+    --color-ground:      #16161A;
+    --color-surface:     #1F1F24;
+    --color-surface-2:   #26262C;
+    --color-surface-3:   #2F2F36;
+    --color-line:        #32323A;
+    --color-line-strong: #74707B;
+    --color-ink:         #EDEAE6;
+    --color-ink-2:       #A8A39C;
+    --color-ink-3:       #7C7872;
+    --color-accent:      #FB923C;
+    --color-accent-hover:#FDBA74;
+    --color-on-accent:   #1A1817;
+    --color-danger:      #F87171;
+    --color-warn:        #FBBF24;
+    --color-ok:          #4ADE80;
+    --color-info:        #7DA9FF;
+    --color-lane-slate:  #94A3B8;
+    --color-lane-blue:   #7DA9FF;
+    --color-lane-teal:   #4FD1C5;
+    --color-lane-green:  #4ADE80;
+    --color-lane-amber:  #FBBF24;
+    --color-lane-rose:   #FB7185;
+    --color-lane-violet: #A78BFA;
+    --shadow-card:      0 1px 2px 0 rgb(0 0 0 / 0.40);
+    --shadow-card-drag: 0 8px 24px -4px rgb(0 0 0 / 0.60), 0 2px 6px 0 rgb(0 0 0 / 0.40);
+    --shadow-pop:       0 12px 32px -8px rgb(0 0 0 / 0.70), 0 2px 8px 0 rgb(0 0 0 / 0.45);
+  }
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  body {
+    background-color: var(--color-ground);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* One focus treatment, everywhere, measured at 4.97:1 on ground. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+  [hidden] { display: none !important; }
+}
+
+/* Repeated chrome. v4 needs @utility (not a bare class in @layer components)
+   for anything another rule will @apply. This is the only place @apply appears. */
+@utility btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-card border
+         px-3 py-1.5 text-sm font-medium transition-colors;
+  transition-duration: var(--duration-fast);
+}
+@utility btn-primary {
+  @apply btn border-transparent bg-accent text-on-accent hover:bg-accent-hover;
+}
+@utility btn-quiet {
+  @apply btn border-line bg-surface text-ink-2 hover:bg-surface-2 hover:text-ink;
+}
+@utility btn-danger {
+  @apply btn border-transparent bg-danger text-surface hover:opacity-90;
+}
+@utility field {
+  @apply w-full rounded-card border border-line-strong bg-surface px-2.5 py-1.5
+         text-sm text-ink placeholder:text-ink-3;
+}
+@utility form-label {
+  @apply mb-1 block text-xs font-medium tracking-wide text-ink-2;
+}
+
+@layer utilities {
+  /* Drag affordances. SortableJS applies these classes; they are not decoration,
+     they are the only feedback that a drag is in flight. */
+  .card-ghost   { opacity: 0.35; }
+  .card-chosen  { box-shadow: var(--shadow-card-drag); }
+  .card-drag    { transform: rotate(1.5deg); }
+  .lane-dropzone-active {
+    background-color: var(--color-surface-3);
+    outline: 2px dashed var(--color-accent);
+    outline-offset: -4px;
+  }
+}
+
+/* Every animation in the app is opt-out here, in one place. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .card-drag { transform: none; }
+}

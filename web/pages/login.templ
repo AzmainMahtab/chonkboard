@@ -1,0 +1,68 @@
+package pages
+
+import (
+	"github.com/AzmainMahtab/chonkboard/web/layouts"
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// LoginPage is the only unauthenticated page in the application.
+//
+// A plain <form method="post">, not an HTMX request: this page has to work before
+// any JavaScript has loaded or if it fails to, and a full navigation is the
+// correct response to a successful sign-in anyway.
+templ LoginPage(p view.Page, f view.LoginForm) {
+	@layouts.Plain(p) {
+		<div class="mb-8 flex items-center gap-2.5">
+			<span class="grid size-8 place-items-center rounded-card bg-accent text-xs font-bold text-on-accent">CB</span>
+			<span class="text-base font-semibold tracking-tight">Chonkboard</span>
+		</div>
+		<h1 class="text-xl font-semibold tracking-tight">Sign in</h1>
+		<p class="mt-1.5 text-sm text-ink-3">
+			Accounts are created by the board owner.
+		</p>
+		<form method="post" action="/login" class="mt-6 flex flex-col gap-4">
+			<input type="hidden" name="csrf_token" value={ p.CSRFToken }/>
+			if f.Error != "" {
+				<div
+					role="alert"
+					class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-ink"
+				>
+					{ f.Error }
+				</div>
+			}
+			<div class="flex flex-col gap-1.5">
+				<label for="email" class="form-label">Email</label>
+				<input
+					id="email"
+					name="email"
+					type="email"
+					class="field"
+					value={ f.Email }
+					autocomplete="username"
+					required
+					autofocus
+					{ fieldAttrs("email", f.EmailError)... }
+				/>
+				if f.EmailError != "" {
+					<p id={ errorID("email") } class="text-xs text-danger">{ f.EmailError }</p>
+				}
+			</div>
+			<div class="flex flex-col gap-1.5">
+				<label for="password" class="form-label">Password</label>
+				<input
+					id="password"
+					name="password"
+					type="password"
+					class="field"
+					autocomplete="current-password"
+					required
+					{ fieldAttrs("password", f.PasswordError)... }
+				/>
+				if f.PasswordError != "" {
+					<p id={ errorID("password") } class="text-xs text-danger">{ f.PasswordError }</p>
+				}
+			</div>
+			<button type="submit" class="btn-primary mt-1">Sign in</button>
+		</form>
+	}
+}

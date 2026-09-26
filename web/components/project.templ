@@ -1,0 +1,118 @@
+package components
+
+import (
+	"strconv"
+
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// ProjectCard is one board on the home page.
+//
+// The whole card is a link rather than a div with a click handler: navigation is
+// `<a href>`, which keeps it keyboard reachable, middle-clickable, and legible to a
+// crawler.
+templ ProjectCard(p view.ProjectSummary) {
+	<a
+		href={ templ.SafeURL("/projects/" + p.Slug) }
+		class="group flex h-full flex-col rounded-lane border border-line bg-surface p-4 transition-colors hover:border-line-strong"
+	>
+		<div class="flex items-start justify-between gap-3">
+			<h2 class="text-sm font-semibold leading-snug tracking-tight group-hover:text-accent">
+				{ p.Name }
+			</h2>
+			if p.IsArchived {
+				<span class="shrink-0 rounded-pill bg-surface-3 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-ink-3">
+					Archived
+				</span>
+			} else if p.Role != "" {
+				<span class="shrink-0 rounded-pill bg-surface-2 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-ink-3">
+					{ p.Role }
+				</span>
+			}
+		</div>
+		if p.Description != "" {
+			<p class="mt-1.5 line-clamp-2 text-sm text-ink-2">{ p.Description }</p>
+		}
+		<dl class="mt-auto flex items-center gap-4 pt-4 text-xs text-ink-3">
+			<div class="flex items-baseline gap-1">
+				<dt class="sr-only">Lanes</dt>
+				<dd class="font-medium text-ink-2">{ strconv.Itoa(p.Lanes) }</dd>
+				<span>{ pluralise(p.Lanes, "lane", "lanes") }</span>
+			</div>
+			<div class="flex items-baseline gap-1">
+				<dt class="sr-only">Cards</dt>
+				<dd class="font-medium text-ink-2">{ strconv.Itoa(p.Cards) }</dd>
+				<span>{ pluralise(p.Cards, "card", "cards") }</span>
+			</div>
+			<span class="ml-auto font-mono text-2xs">/{ p.Slug }</span>
+		</dl>
+	</a>
+}
+
+// ProjectForm creates or renames a project. A plain form, so it works with no
+// JavaScript; the page it sits on decides the action.
+templ ProjectForm(f view.ProjectForm, action, submitLabel string) {
+	<form method="post" action={ templ.SafeURL(action) } class="mt-6 flex flex-col gap-4">
+		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		if f.Error != "" {
+			<div role="alert" class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm">
+				{ f.Error }
+			</div>
+		}
+		<div>
+			<label for="project-name" class="form-label">Name</label>
+			<input
+				id="project-name"
+				name="name"
+				type="text"
+				class="field"
+				value={ f.Name }
+				maxlength="120"
+				required
+				autofocus
+				{ fieldState("project-name", f.NameError)... }
+			/>
+			if f.NameError != "" {
+				<p id="project-name-error" class="mt-1 text-xs text-danger">{ f.NameError }</p>
+			}
+		</div>
+		<div>
+			<label for="project-slug" class="form-label">URL key <span class="font-normal text-ink-3">optional</span></label>
+			<input
+				id="project-slug"
+				name="slug"
+				type="text"
+				class="field font-mono"
+				value={ f.Slug }
+				maxlength="40"
+				pattern="[a-z0-9]+(-[a-z0-9]+)*"
+				placeholder="derived from the name"
+				aria-describedby="project-slug-hint"
+				{ fieldState("project-slug", f.SlugError)... }
+			/>
+			<p id="project-slug-hint" class="mt-1 text-xs text-ink-3">
+				Lower case, digits and hyphens. This is the address of the board.
+			</p>
+			if f.SlugError != "" {
+				<p id="project-slug-error" class="mt-1 text-xs text-danger">{ f.SlugError }</p>
+			}
+		</div>
+		<div>
+			<label for="project-description" class="form-label">Description <span class="font-normal text-ink-3">optional</span></label>
+			<textarea
+				id="project-description"
+				name="description"
+				class="field min-h-20 resize-y"
+				maxlength="2000"
+				{ fieldState("project-description", f.DescError)... }
+			>{ f.Description }</textarea>
+			if f.DescError != "" {
+				<p id="project-description-error" class="mt-1 text-xs text-danger">{ f.DescError }</p>
+			}
+		</div>
+		<div class="flex items-center gap-2">
+			<button type="submit" class="btn-primary">{ submitLabel }</button>
+			<a href="/" class="btn-quiet">Cancel</a>
+		</div>
+	</form>
+}

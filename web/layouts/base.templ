@@ -1,0 +1,24 @@
+package layouts
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// Base is the only place an <html> document is written.
+templ Base(p view.Page) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="light dark"/>
+			<meta name="robots" content="noindex, nofollow"/>
+			<title>{ p.Title } · Chonkboard</title>
+			<meta name="csrf-token" content={ p.CSRFToken }/>
+			<link rel="stylesheet" href={ "/static/css/app.css" + p.AssetSuffix }/>
+			<script src={ "/static/vendor/htmx.min.js" + p.AssetSuffix } defer></script>
+			<script src={ "/static/vendor/htmx-ext-sse.js" + p.AssetSuffix } defer></script>
+			<script src={ "/static/vendor/sortable.min.js" + p.AssetSuffix } defer></script>
+			<script src={ "/static/vendor/alpine.min.js" + p.AssetSuffix } defer></script>
+		</head>
+		{ children... }
+	</html>
+}

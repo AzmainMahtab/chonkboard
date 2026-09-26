@@ -1,0 +1,98 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/AzmainMahtab/chonkboard/web/components"
+	"github.com/AzmainMahtab/chonkboard/web/layouts"
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// ProjectsPage is the application's home: the boards this person may open.
+templ ProjectsPage(p view.Page, l view.ProjectList) {
+	@layouts.App(p) {
+		<div class="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10">
+			<div class="flex flex-wrap items-baseline justify-between gap-3">
+				<div>
+					<h1 class="text-xl font-semibold tracking-tight">Projects</h1>
+					<p class="mt-1 text-sm text-ink-3">
+						if len(l.Projects) == 0 {
+							Nothing here yet.
+						} else {
+							{ strconv.Itoa(len(l.Projects)) } { plural(len(l.Projects), "board", "boards") }
+						}
+					</p>
+				</div>
+				<div class="flex items-center gap-2">
+					if l.HasArchived {
+						if l.ShowArchived {
+							<a href="/" class="btn-quiet">Hide archived</a>
+						} else {
+							<a href="/?archived=1" class="btn-quiet">Show archived</a>
+						}
+					}
+					if l.CanCreate {
+						<a href="/projects/new" class="btn-primary">New project</a>
+					}
+				</div>
+			</div>
+			if l.Form.Open {
+				@components.ProjectForm(l.Form, "/projects", "Create project")
+			}
+			if len(l.Projects) == 0 && !l.Form.Open {
+				@emptyProjects(l.CanCreate)
+			} else {
+				<ul class="mt-6 grid gap-3 sm:grid-cols-2">
+					for _, project := range l.Projects {
+						<li>
+							@components.ProjectCard(project)
+						</li>
+					}
+				</ul>
+			}
+		</div>
+	}
+}
+
+templ emptyProjects(canCreate bool) {
+	<div class="mt-8 rounded-lane border border-dashed border-line-strong px-6 py-12 text-center">
+		<p class="text-sm font-medium">No boards yet.</p>
+		if canCreate {
+			<p class="mt-1 text-sm text-ink-3">
+				Create one, and it starts with five lanes you can rename.
+			</p>
+			<a href="/projects/new" class="btn-primary mt-4">New project</a>
+		} else {
+			<p class="mt-1 text-sm text-ink-3">
+				You have not been given access to a board yet. The owner grants it.
+			</p>
+		}
+	</div>
+}
+
+// NewProjectPage is the create form on its own page, so it is linkable and works
+// without JavaScript.
+templ NewProjectPage(p view.Page, f view.ProjectForm) {
+	@layouts.App(p) {
+		<div class="mx-auto w-full max-w-md px-4 py-10">
+			<nav class="mb-6 text-sm">
+				<a href="/" class="text-ink-3 hover:text-ink">&larr; Projects</a>
+			</nav>
+			<h1 class="text-xl font-semibold tracking-tight">New project</h1>
+			<p class="mt-1.5 text-sm text-ink-3">
+				It starts with five lanes — Backlog, In progress, Testing, Done, Stash —
+				which you can rename, recolour, reorder or delete.
+			</p>
+			@components.ProjectForm(f, "/projects", "Create project")
+		</div>
+	}
+}
+
+// plural picks a word form. A helper rather than inline arithmetic so the markup
+// stays readable.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}

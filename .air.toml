@@ -1,0 +1,22 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  # templ first: the Go build fails without the generated files. The stylesheet is
+  # rebuilt too, because a new utility class in a .templ has to reach the CSS.
+  cmd = "templ generate && ./bin/tailwindcss -i web/css/input.css -o web/static/css/app.css && go build -o ./tmp/chonkboard ./cmd/chonkboard"
+  bin = "./tmp/chonkboard"
+  include_ext = ["go", "templ", "css", "js", "sql"]
+  exclude_dir = ["bin", "tmp", "data", "node_modules", ".git", ".claude-project"]
+  # Generated files would retrigger the build that produced them.
+  exclude_regex = ["_test\\.go$", "_templ\\.go$", "web/static/css/app\\.css$"]
+  exclude_unchanged = true
+  delay = 300
+  stop_on_error = false
+  log = "build-errors.log"
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true

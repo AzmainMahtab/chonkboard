@@ -1,0 +1,17 @@
+package components
+
+// Toast is the app's only transient message. It is announced to assistive
+// technology because a failed drag has no other visible consequence: the card
+// simply snaps back, which looks like nothing happened.
+templ Toast(message, tone string) {
+	<div
+		class={
+			"pointer-events-auto rounded-card border px-3 py-2 text-sm shadow-pop",
+			toastTint(tone),
+		}
+		role={ toastRole(tone) }
+		x-data="{ show: true }"
+		x-init="setTimeout(() => show = false, 6000)"
+		x-show="show"
+	>{ message }</div>
+}

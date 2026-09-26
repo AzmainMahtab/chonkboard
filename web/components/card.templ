@@ -1,0 +1,97 @@
+package components
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// priorityBar returns the left-edge rule for a card. The strings are written out
+// in full so Tailwind's scanner finds them; a concatenated class name would be
+// invisible to it and silently unstyled.
+func priorityBar(p string) string {
+	switch p {
+	case "urgent":
+		return "before:bg-danger"
+	case "high":
+		return "before:bg-warn"
+	case "low":
+		return "before:bg-line-strong"
+	default:
+		return "before:bg-transparent"
+	}
+}
+
+func dueClass(due *time.Time, now time.Time) string {
+	switch {
+	case due == nil:
+		return ""
+	case due.Before(now):
+		return "text-danger font-medium"
+	case due.Before(now.Add(48 * time.Hour)):
+		return "text-warn font-medium"
+	default:
+		return "text-ink-3"
+	}
+}
+
+// Card is the draggable unit. Its id is the OOB swap target for live updates,
+// and its data attributes are the contract board.js reads when building a move.
+templ Card(c view.Card) {
+	<article
+		id={ "card-" + c.UUID }
+		data-card-uuid={ c.UUID }
+		tabindex="0"
+		role="listitem"
+		aria-label={ c.Title }
+		class={
+			"group relative cursor-grab rounded-card border border-line bg-surface p-2.5 pl-3 shadow-card",
+			"before:absolute before:inset-y-1.5 before:left-1 before:w-0.5 before:rounded-pill before:content-['']",
+			"hover:border-line-strong active:cursor-grabbing",
+			priorityBar(c.Priority),
+		}
+		hx-get={ "/cards/" + c.UUID }
+		hx-target="#modal"
+		hx-swap="innerHTML"
+		hx-trigger="click, keyup[key=='Enter']"
+	>
+		if len(c.Labels) > 0 {
+			<div class="mb-1.5 flex flex-wrap gap-1">
+				for _, l := range c.Labels {
+					@LabelChip(l)
+				}
+			</div>
+		}
+		<h3 class="text-sm leading-snug text-ink">{ c.Title }</h3>
+		<div class="mt-2 flex items-center gap-2.5 text-2xs text-ink-3">
+			if c.DueAt != nil {
+				<span class={ dueClass(c.DueAt, time.Now()) } title={ c.DueAt.Format("Mon 2 Jan 2006") }>
+					{ c.DueAt.Format("2 Jan") }
+				</span>
+			}
+			if c.HasDesc {
+				<span title="Has a description" aria-label="Has a description">≡</span>
+			}
+			if c.Comments > 0 {
+				<span title={ fmt.Sprintf("%d comments", c.Comments) }>{ fmt.Sprintf("%d", c.Comments) } ▪</span>
+			}
+			if c.Files > 0 {
+				<span title={ fmt.Sprintf("%d attachments", c.Files) }>{ fmt.Sprintf("%d", c.Files) } ⎘</span>
+			}
+			<span class="flex-1"></span>
+			if c.Assignee != nil {
+				<span
+					class="grid size-5 place-items-center rounded-pill bg-surface-3 text-2xs font-semibold text-ink-2"
+					title={ c.Assignee.DisplayName }
+				>{ initials(c.Assignee.DisplayName) }</span>
+			}
+		</div>
+	</article>
+}
+
+templ LabelChip(l view.Label) {
+	<span
+		class={ "rounded-pill px-1.5 py-0.5 text-2xs font-medium", labelTint(l.Color) }
+	>{ l.Name }</span>
+}

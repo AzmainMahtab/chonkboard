@@ -1,0 +1,88 @@
+package components
+
+import (
+	"fmt"
+
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// Lane is a board column. Its card list is the Sortable container; the
+// data-lane-cards attribute is what board.js binds to, and data-wip-limit lets
+// the client refuse an obviously-over-limit drop before the round trip.
+templ Lane(b view.Board, l view.Lane) {
+	@lane(b, l, nil)
+}
+
+// LaneOOB is the same lane marked for an out-of-band swap. Every board mutation
+// broadcasts whole lanes rather than single cards: an OOB outerHTML swap replaces
+// an element where it already sits, so it cannot relocate a card from one lane's
+// container to another's. Re-rendering both affected lanes is correct by
+// construction and costs a few hundred bytes.
+templ LaneOOB(b view.Board, l view.Lane) {
+	@lane(b, l, templ.Attributes{"hx-swap-oob": "outerHTML:#lane-" + l.UUID})
+}
+
+templ lane(b view.Board, l view.Lane, oob templ.Attributes) {
+	<section
+		id={ "lane-" + l.UUID }
+		data-lane-uuid={ l.UUID }
+		class="flex max-h-full w-[17rem] shrink-0 flex-col rounded-lane bg-surface-2"
+		aria-labelledby={ "lane-name-" + l.UUID }
+		{ oob... }
+	>
+		<header class="flex items-center gap-2 px-2.5 pt-2.5 pb-1.5">
+			<span class={ "size-2 shrink-0 rounded-pill", laneAccent(l.Color) } aria-hidden="true"></span>
+			<h2 id={ "lane-name-" + l.UUID } class="flex-1 truncate text-xs font-semibold uppercase tracking-wide text-ink-2">
+				{ l.Name }
+			</h2>
+			@LaneCount(l)
+			if b.CanManage {
+				<a
+					href={ templ.SafeURL("/projects/" + b.ProjectSlug + "/lanes/" + l.UUID + "/edit") }
+					class="rounded-card px-1 text-ink-3 hover:bg-surface-3 hover:text-ink"
+					aria-label={ "Lane settings for " + l.Name }
+					title="Lane settings"
+				>⋯</a>
+			}
+		</header>
+		<div
+			id={ "lane-cards-" + l.UUID }
+			data-lane-cards
+			data-lane-uuid={ l.UUID }
+			data-wip-limit={ fmt.Sprintf("%d", l.WIPLimit) }
+			role="list"
+			aria-labelledby={ "lane-name-" + l.UUID }
+			class="flex min-h-12 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2"
+		>
+			for _, c := range l.Cards {
+				@Card(c)
+			}
+		</div>
+		if b.CanAddCards {
+			<footer class="px-2 pb-2">
+				<button
+					type="button"
+					class="w-full rounded-card px-2 py-1.5 text-left text-xs text-ink-3 hover:bg-surface-3 hover:text-ink-2"
+					hx-get={ "/projects/" + b.ProjectSlug + "/lanes/" + l.UUID + "/cards/new" }
+					hx-target="#modal"
+					hx-swap="innerHTML"
+				>+ Add a card</button>
+			</footer>
+		}
+	</section>
+}
+
+// LaneCount is its own component so a lane header can be read at a glance:
+// count, or count against the limit the manager set, in red once it is past it.
+templ LaneCount(l view.Lane) {
+	<span
+		id={ "lane-count-" + l.UUID }
+		class={ "rounded-pill px-1.5 text-2xs tabular-nums", countTint(l) }
+	>
+		if l.WIPLimit > 0 {
+			{ fmt.Sprintf("%d/%d", len(l.Cards), l.WIPLimit) }
+		} else {
+			{ fmt.Sprintf("%d", len(l.Cards)) }
+		}
+	</span>
+}

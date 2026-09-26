@@ -1,0 +1,249 @@
+# Route surface
+
+Every route the application serves. Declared in
+`internal/platform/httpserver/routes.go` — a new top-level prefix goes there, not
+in `main.go`, so one file answers "what does this app serve?".
+
+A route returns one of three things:
+
+- a **full page** (templ `pages.*`), for a browser navigation
+- a **fragment** (templ `components.*`), for an HTMX swap
+- **204 with no body**, when the result reaches the client over SSE instead
+
+`{p}` is a project uuid, `{c}` a card uuid, `{l}` a lane uuid, `{u}` a user uuid,
+`{x}` a comment or attachment uuid. Every one is a UUIDv7; an internal integer id
+never appears in a URL.
+
+## Public — **built**
+
+These sit in their own chi group with **no session middleware**, rather than inside
+one that skips them by path. A path-based exemption list is a thing to get wrong —
+add a route, forget the list, and it is either unreachable or unprotected — so the
+two groups make the boundary structural instead.
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| GET | `/login` | page | redirects to `/` when already signed in; no board.js |
+| POST | `/login` | 303, or the form with errors | `LoginRateLimit`: 30/min per IP, 5/min per account |
+| GET | `/healthz` | `text/plain` | liveness; also the Docker healthcheck |
+| GET | `/static/*` | asset | embedded, `immutable`, content-hashed query, directory listings 404 |
+
+## Signed in, outside the password gate — **built**
+
+`POST /logout` is not public: it needs a session to revoke. It sits above the
+forced-password-change gate so a user held on that page can still leave, which would
+otherwise be a redirect loop with no way out.
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| POST | `/logout` | 303 `/login` | revokes the session row, clears the cookie |
+
+## Signed in, password gate applied — **built**
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| GET | `/account` | page | the change-password form |
+| GET | `/account/password` | page | same page; where `must_change_password` holds a user |
+| POST | `/account/password` | page | revokes every *other* session on success |
+
+## Any signed-in user — **built**
+
+`{p}` accepts a slug or a uuid. A slug is what a person types and shares; a uuid is
+what fragments and SSE payloads carry, where a rename must not break the reference.
+`project.Service.Resolve` decides which was given and refuses with **404** — never
+403 — when the caller has no grant, because a 403 would confirm the board exists.
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| GET | `/` | page | project list, scoped to the caller's grants; `?archived=1` to include archived |
+| GET | `/projects/{p}` | page | the board — real lanes from the database |
+| GET | `/projects/{p}/board` | fragment | whole board; reconnect and `board-dirty` target |
+| GET | `/account` | page | change your own password |
+| POST | `/account/password` | page | revokes every *other* session |
+
+## Cards — **built**
+
+Everything a granted member is here to do. These are **POST, not PATCH or DELETE**:
+the forms are real `<form>` elements that work with no JavaScript, and a browser form
+can only issue GET or POST.
+
+`/cards/{c}` and `/lanes/{l}/fragment` carry **no project**, because they appear in the
+DOM on every card and in the move request `board.js` builds. Each handler looks the
+project up from the card or lane, resolves access against it, and then re-reads the
+thing scoped — so an ungranted card is a **404**, indistinguishable from one that does
+not exist.
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| GET | `/projects/{p}/lanes/{l}/cards/new` | fragment | the create form, into `#modal` |
+| POST | `/projects/{p}/lanes/{l}/cards` | fragment | create; returns the lane |
+| GET | `/lanes/{l}/fragment` | fragment | one lane; the revert target after a failed drag |
+| GET | `/cards/{c}` | fragment | detail, into `#modal` |
+| GET | `/cards/{c}/edit` | fragment | the edit form |
+| POST | `/cards/{c}` | fragment | save; returns the lane |
+| POST | `/cards/{c}/archive` | 303 or fragment | `archived=1` or `0` |
+| POST | `/cards/{c}/delete` | 303 or fragment | **own card only, for a member** |
+| POST | `/cards/{c}/move` | **204** | the drag; broadcasts over SSE |
+| GET | `/projects/{p}/events` | `text/event-stream` | SSE; requires `?client=<tab id>` |
+
+Archive and delete answer an HTMX request with the lane fragment and an
+`HX-Trigger: card-gone`, and a plain form post with a redirect to the board — there is
+nothing for a fragment to replace when the modal that held the button is gone.
+
+## Rich card — *phase 5*
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| POST | `/cards/{c}/comments` | fragment | |
+| POST | `/comments/{x}/delete` | fragment | own comment only, for a member |
+| POST | `/cards/{c}/attachments` | fragment | multipart; size and MIME limited |
+| GET | `/attachments/{x}` | file | streamed; authorised per request; 404 when not permitted |
+| POST | `/attachments/{x}/delete` | fragment | own attachment only, for a member |
+| POST | `/cards/{c}/labels/{l}` | fragment | attach |
+| POST | `/cards/{c}/labels/{l}/remove` | fragment | detach |
+
+## Project manager or above — **built**
+
+Every route here is behind a manager check **twice**: the handler produces the 403,
+and the service refuses again as its first statement. The duplication is deliberate —
+the service check is what makes the rule survive a route added later without its own
+guard, and phases 4–7 add many.
+
+A member reaching any of these gets **403**, whether or not the UI offered it. The
+route test asserts this with a valid CSRF token, and asserts a control request first,
+so a 403 cannot be the CSRF check passing for the wrong reason.
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| GET | `/projects/{p}/settings` | page | lanes, people, details, danger zone |
+| POST | `/projects/{p}/settings` | 303 | name and description |
+| GET | `/projects/{p}/lanes/new` | page | the create form |
+| POST | `/projects/{p}/lanes` | 303 | appended at the end |
+| GET | `/projects/{p}/lanes/{l}/edit` | page | the edit form |
+| POST | `/projects/{p}/lanes/{l}` | 303 | name, colour, WIP limit, done flag — never the position |
+| POST | `/projects/{p}/lanes/{l}/move` | 303 | one place up or down; the keyboard path |
+| POST | `/projects/{p}/lanes/reorder` | 204 | a whole new order; must name every lane |
+| GET | `/projects/{p}/lanes/{l}/delete` | page | asks where the cards go |
+| POST | `/projects/{p}/lanes/{l}/delete` | 303 | requires `move_to` when the lane holds cards |
+| POST | `/projects/{p}/members` | 303 | `role=manager` needs the operator |
+| POST | `/projects/{p}/members/{u}` | 303 | re-role; the operator alone |
+| POST | `/projects/{p}/members/{u}/revoke` | 303 | a manager may remove ordinary members only |
+
+Refusals worth knowing: deleting the last lane is **409**, so is demoting or removing
+the last manager, and so is deleting a lane with cards and no `move_to`. Revoking
+somebody who is not a member is **404**.
+
+## Operator only — **built**
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| GET | `/projects/new` | page | the create form |
+| POST | `/projects` | 303 | project + creator's manager grant + five lanes, one transaction |
+| POST | `/projects/{p}/archive` | 303 | toggles; archived boards leave every list |
+| POST | `/projects/{p}/delete` | 303 | cascades to lanes, cards, labels, grants, activity |
+
+## Project label management — *phase 5*
+
+The service, store and tests exist; there is no UI until a card can carry a label.
+
+| Method | Path | Returns |
+|---|---|---|
+| POST | `/projects/{p}/labels` | fragment |
+| PATCH | `/labels/{l}` | fragment |
+| DELETE | `/labels/{l}` | 204 |
+
+## Super admin only — *phase 7*
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| GET | `/admin` | page | users, projects, who has access to what |
+| GET | `/admin/users` | page | |
+| POST | `/admin/users` | fragment | **reveals the generated password exactly once** |
+| PATCH | `/admin/users/{u}` | fragment | |
+| POST | `/admin/users/{u}/password` | fragment | one-time reveal; revokes all that user's sessions |
+| POST | `/admin/users/{u}/suspend` | fragment | revokes all sessions immediately |
+| POST | `/admin/users/{u}/reinstate` | fragment | |
+| GET | `/admin/projects` | page | |
+| POST | `/admin/projects` | redirect | |
+| POST | `/admin/projects/{p}/archive` | fragment | |
+| DELETE | `/admin/projects/{p}` | redirect | cascades to lanes, cards, labels, grants |
+
+## The move contract — **built**
+
+The one endpoint with a hand-written client, so its shape is fixed here.
+
+```
+POST /cards/{c}/move
+Content-Type: application/x-www-form-urlencoded
+X-CSRF-Token: <session csrf>
+X-Client-Id: <tab id>
+
+to_lane=<lane uuid>
+&to_order=<card uuid>&to_order=<card uuid>&…
+&from_lane=<lane uuid>          # omitted on a same-lane reorder
+&from_order=<card uuid>&…       # omitted on a same-lane reorder
+```
+
+The **source lane's order is sent too**, because removing a card shifts everything
+below it, and the server writes dense positions rather than computing a shift.
+
+Server side, in one transaction: read the board state, run
+`internal/card/domain.Plan`, write every placement, write a `card_activity` row,
+commit — then broadcast. A rejected move writes nothing.
+
+An **in-lane reorder writes no activity row**: it is the most common gesture there is,
+and logging it would bury a card's real history.
+
+`to_order` and `from_order` are read with empties dropped. A form that submits
+`from_order=` with no value arrives in Go as a slice holding one empty string, and
+that would refuse the ordinary move of dragging the last card out of a lane.
+
+The affected-lane list includes a lane the card **left** even when the plan wrote no
+placement for it — an emptied lane produces none, and it is exactly the lane that
+visibly changed.
+
+| Outcome | Status | Body |
+|---|---|---|
+| Applied | 204 | empty — the result reaches other tabs over SSE |
+| Target lane at its WIP limit | 409 | a toast fragment |
+| Card or lane not on this board | 404 | a toast fragment |
+| An order naming a card from another board | 404 | a toast fragment |
+| `from_lane` disagrees with where the card actually is | 409 | a toast fragment |
+| The same card twice, or the moved card missing from `to_order` | 400 | a toast fragment |
+| No CSRF header | 403 | — |
+| No grant on the card's board | 404 | a toast fragment — never 403 |
+
+On any non-204 the client appends the toast and re-fetches both affected lanes via
+`GET /lanes/{l}/fragment`, so the board snaps back to whatever the database
+actually says rather than to a guessed undo.
+
+## Middleware order
+
+Global, on every request:
+
+```
+RealIP → RequestID → RequestLogger → Recoverer → SecurityHeaders
+```
+
+`RealIP` is first so the rate limiter and the logs see the actual client rather than
+the proxy — which requires the reverse proxy to set `X-Forwarded-For`. If it does
+not, every request shares one IP bucket, which fails closed rather than open.
+
+Then, per group:
+
+```
+public          (nothing further)
+  └─ POST /login    + LoginRateLimit
+
+authenticated   + RequireSession → VerifyCSRF
+  ├─ POST /logout
+  └─ everything else  + RequirePasswordChange
+```
+
+`RequireSession` before `VerifyCSRF`, because the token it compares against lives on
+the session. `RequirePasswordChange` last, so a user being held still has a session
+and a CSRF token and can actually submit the form.
+
+**Not yet applied:** `RequestSize` and `Timeout` (exempting the SSE route) land in
+phase 8 with the rest of the hardening.
+

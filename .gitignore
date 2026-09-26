@@ -1,0 +1,78 @@
+# ---------------------------------------------------------------------------
+# Chonkboard — what must never be committed, and why.
+# ---------------------------------------------------------------------------
+
+# Build output. The binary is reproducible from source; the Tailwind CLI is a
+# ~120MB platform binary fetched by `make tools`.
+/bin/chonkboard
+/bin/tailwindcss
+/bin/
+/tmp/
+/dist/
+chonkboard
+build-errors.log
+
+# Generated code and assets. Both are reproducible: *_templ.go from the .templ
+# sources, app.css from input.css. Committing them invites a merge conflict in a
+# file nobody edits, and a stale copy that silently ships.
+*_templ.go
+*_templ.txt
+/web/static/css/app.css
+
+# Live data. Everything the app owns lives in one directory; none of it belongs
+# in version control. The -wal and -shm files are WAL sidecars — committing a
+# database without them is committing a torn snapshot.
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# Backups are snapshots of production data.
+/backups/
+*.db.bak
+
+# Secrets and local configuration. .env.example is the committed template.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!*.pub
+
+# Test and coverage artefacts
+coverage.out
+coverage.html
+*.test
+*.out
+/testdata/tmp/
+
+# Go tooling. Anchored: an unanchored "vendor/" also swallows
+# web/static/vendor/, which holds the pinned front-end libraries that must be
+# committed — that is the entire point of vendoring them.
+/vendor/
+go.work
+go.work.sum
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node is deliberately absent from this project — Tailwind runs from the
+# standalone CLI. These entries exist so an accidental `npm init` does not get
+# committed before someone notices.
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Local agent scratch. .project-doc/ IS committed — it is the project's record.
+.claude/settings.local.json

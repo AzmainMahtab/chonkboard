@@ -1,0 +1,237 @@
+package components
+
+import (
+	"strconv"
+
+	"github.com/AzmainMahtab/chonkboard/web/view"
+)
+
+// LaneSettings is the create/edit form for one lane.
+//
+// Returned as a fragment into a modal by HTMX, and also rendered inline on the
+// settings page when JavaScript is unavailable. Either way it is a real form with a
+// real action, so it submits without htmx.
+templ LaneSettings(projectSlug string, f view.LaneForm) {
+	<form
+		method="post"
+		action={ laneFormAction(projectSlug, f) }
+		class="flex flex-col gap-4"
+		hx-boost="false"
+	>
+		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		if f.Error != "" {
+			<div role="alert" class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm">
+				{ f.Error }
+			</div>
+		}
+		<div>
+			<label for="lane-name" class="form-label">Lane name</label>
+			<input
+				id="lane-name"
+				name="name"
+				type="text"
+				class="field"
+				value={ f.Name }
+				maxlength="60"
+				required
+				autofocus
+				{ fieldState("lane-name", f.NameError)... }
+			/>
+			if f.NameError != "" {
+				<p id="lane-name-error" class="mt-1 text-xs text-danger">{ f.NameError }</p>
+			}
+		</div>
+		<fieldset>
+			<legend class="form-label">Colour</legend>
+			<div class="flex flex-wrap gap-1.5">
+				for _, colour := range f.Colours {
+					@colourSwatch(colour, colour == f.Colour)
+				}
+			</div>
+		</fieldset>
+		<div>
+			<label for="lane-wip" class="form-label">
+				WIP limit <span class="font-normal text-ink-3">optional</span>
+			</label>
+			<input
+				id="lane-wip"
+				name="wip_limit"
+				type="number"
+				class="field"
+				value={ f.WIPLimit }
+				min="1"
+				max="999"
+				inputmode="numeric"
+				placeholder="no limit"
+				aria-describedby="lane-wip-hint"
+				{ fieldState("lane-wip", f.WIPError)... }
+			/>
+			<p id="lane-wip-hint" class="mt-1 text-xs text-ink-3">
+				A drag into a full lane is refused. Leave empty for no limit.
+			</p>
+			if f.WIPError != "" {
+				<p id="lane-wip-error" class="mt-1 text-xs text-danger">{ f.WIPError }</p>
+			}
+		</div>
+		<label class="flex items-start gap-2.5">
+			<input
+				type="checkbox"
+				name="is_done"
+				value="1"
+				class="mt-0.5 size-4 rounded-sm border-line-strong accent-accent"
+				checked?={ f.IsDone }
+			/>
+			<span class="text-sm">
+				<span class="font-medium">This lane means done.</span>
+				<span class="block text-xs text-ink-3">
+					Cards here are never shown as overdue.
+				</span>
+			</span>
+		</label>
+		<div class="flex items-center gap-2 pt-1">
+			<button type="submit" class="btn-primary">
+				if f.IsNew() {
+					Add lane
+				} else {
+					Save lane
+				}
+			</button>
+			<a href={ settingsURL(projectSlug) } class="btn-quiet">Cancel</a>
+		</div>
+	</form>
+}
+
+// colourSwatch is one radio in the palette, drawn as the colour it selects.
+//
+// A real radio input, visually hidden rather than replaced, so it is keyboard
+// reachable and announced as a radio group.
+templ colourSwatch(colour string, selected bool) {
+	<label class="cursor-pointer">
+		<input
+			type="radio"
+			name="color"
+			value={ colour }
+			class="peer sr-only"
+			checked?={ selected }
+		/>
+		<span
+			class={ "block size-7 rounded-card ring-offset-2 ring-offset-surface peer-focus-visible:ring-2 peer-focus-visible:ring-accent peer-checked:ring-2 peer-checked:ring-ink " + laneAccent(colour) }
+			title={ colour }
+		></span>
+		<span class="sr-only">{ colour }</span>
+	</label>
+}
+
+// LaneRow is one lane on the settings page, with its reorder and delete controls.
+templ LaneRow(projectSlug string, l view.Lane, index, total int) {
+	<li
+		class="flex items-center gap-3 rounded-card border border-line bg-surface px-3 py-2.5"
+		data-lane={ l.UUID }
+	>
+		<span class={ "size-3 shrink-0 rounded-full " + laneAccent(l.Color) } aria-hidden="true"></span>
+		<span class="min-w-0 flex-1 truncate text-sm font-medium">{ l.Name }</span>
+		if l.IsDone {
+			<span class="shrink-0 rounded-pill bg-surface-2 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-ink-3">
+				Done
+			</span>
+		}
+		if l.WIPLimit > 0 {
+			<span class="shrink-0 text-xs tabular-nums text-ink-3">
+				max { strconv.Itoa(l.WIPLimit) }
+			</span>
+		}
+		<span class="shrink-0 text-xs tabular-nums text-ink-3">
+			{ strconv.Itoa(len(l.Cards)) } { pluralise(len(l.Cards), "card", "cards") }
+		</span>
+		<div class="flex shrink-0 items-center gap-1">
+			@laneMoveButton(projectSlug, l.UUID, "up", index > 0)
+			@laneMoveButton(projectSlug, l.UUID, "down", index < total-1)
+			<a
+				href={ templ.SafeURL("/projects/" + projectSlug + "/lanes/" + l.UUID + "/edit") }
+				class="btn-quiet px-2"
+			>Edit</a>
+			@laneDeleteButton(projectSlug, l)
+		</div>
+	</li>
+}
+
+// laneMoveButton moves a lane one place.
+//
+// This is the keyboard path for reordering. Dragging is a pointer gesture; a board
+// whose lanes can only be dragged is unusable without a mouse, so every reorder is
+// also reachable as a button.
+templ laneMoveButton(projectSlug, laneUUID, direction string, enabled bool) {
+	if enabled {
+		<form method="post" action={ templ.SafeURL("/projects/" + projectSlug + "/lanes/" + laneUUID + "/move") }>
+			<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+			<input type="hidden" name="direction" value={ direction }/>
+			<button type="submit" class="btn-quiet px-2" aria-label={ "Move lane " + direction }>
+				if direction == "up" {
+					&uarr;
+				} else {
+					&darr;
+				}
+			</button>
+		</form>
+	} else {
+		<span class="btn-quiet px-2 opacity-30" aria-hidden="true">
+			if direction == "up" {
+				&uarr;
+			} else {
+				&darr;
+			}
+		</span>
+	}
+}
+
+// laneDeleteButton links to the delete confirmation rather than deleting inline.
+//
+// A lane holding cards needs somewhere to send them, which is a decision that needs
+// a page, not a confirm dialog.
+templ laneDeleteButton(projectSlug string, l view.Lane) {
+	<a
+		href={ templ.SafeURL("/projects/" + projectSlug + "/lanes/" + l.UUID + "/delete") }
+		class="btn-quiet px-2 text-danger hover:bg-danger/10"
+	>Delete</a>
+}
+
+// LaneDeleteForm asks where a lane's cards should go before removing it.
+templ LaneDeleteForm(projectSlug string, lane view.Lane, others []view.Lane, errMessage string) {
+	<form
+		method="post"
+		action={ templ.SafeURL("/projects/" + projectSlug + "/lanes/" + lane.UUID + "/delete") }
+		class="flex flex-col gap-4"
+	>
+		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		if errMessage != "" {
+			<div role="alert" class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm">
+				{ errMessage }
+			</div>
+		}
+		<p class="text-sm">
+			Delete <strong class="font-semibold">{ lane.Name }</strong>?
+		</p>
+		if len(lane.Cards) > 0 {
+			<div>
+				<label for="move-to" class="form-label">
+					Move its { strconv.Itoa(len(lane.Cards)) } { pluralise(len(lane.Cards), "card", "cards") } to
+				</label>
+				<select id="move-to" name="move_to" class="field" required>
+					<option value="">Choose a lane…</option>
+					for _, other := range others {
+						<option value={ other.UUID }>{ other.Name }</option>
+					}
+				</select>
+				<p class="mt-1 text-xs text-ink-3">
+					They are appended to the end of that lane, keeping their order.
+				</p>
+			</div>
+		} else {
+			<p class="text-sm text-ink-3">This lane is empty, so nothing moves.</p>
+		}
+		<div class="flex items-center gap-2">
+			<button type="submit" class="btn-danger">Delete lane</button>
+			<a href={ settingsURL(projectSlug) } class="btn-quiet">Cancel</a>
+		</div>
+	</form>
+}
