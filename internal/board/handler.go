@@ -235,8 +235,9 @@ func (h *Handler) NewLane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.renderLaneForm(w, r, access, http.StatusOK, view.LaneForm{
-		Colour:  string(domain.ColourSlate),
-		Colours: colourNames(),
+		Colour:   string(domain.ColourSlate),
+		Colours:  colourNames(),
+		ReturnTo: originFrom(r),
 	})
 }
 
@@ -263,7 +264,7 @@ func (h *Handler) CreateLane(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.dirty(access)
-	h.redirectToSettings(w, r, access.Project.Slug, "Lane added.")
+	h.redirectBack(w, r, access.Project.Slug, form.ReturnTo, "Lane added.")
 }
 
 // EditLane renders the edit form for one lane.
@@ -286,6 +287,7 @@ func (h *Handler) EditLane(w http.ResponseWriter, r *http.Request) {
 		WIPLimit: wipField(lane.WIPLimit),
 		IsDone:   lane.IsDone,
 		Colours:  colourNames(),
+		ReturnTo: originFrom(r),
 	})
 }
 
@@ -315,7 +317,7 @@ func (h *Handler) UpdateLane(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.dirty(access)
-	h.redirectToSettings(w, r, access.Project.Slug, "Lane saved.")
+	h.redirectBack(w, r, access.Project.Slug, form.ReturnTo, "Lane saved.")
 }
 
 // MoveLane shifts one lane up or down by a place.
@@ -389,7 +391,7 @@ func (h *Handler) ConfirmDeleteLane(w http.ResponseWriter, r *http.Request) {
 
 	render.Page(w, r, http.StatusOK, pages.LaneDeletePage(
 		h.projects.Page(r, "Delete lane"),
-		access.Project.Slug, access.Project.Name, lane, others, ""))
+		access.Project.Slug, access.Project.Name, lane, others, "", originFrom(r)))
 }
 
 // DeleteLane removes a lane, moving its cards where the form said.
@@ -418,7 +420,7 @@ func (h *Handler) DeleteLane(w http.ResponseWriter, r *http.Request) {
 			render.Page(w, r, apperrors.From(err).Status(), pages.LaneDeletePage(
 				h.projects.Page(r, "Delete lane"),
 				access.Project.Slug, access.Project.Name, lane, others,
-				apperrors.From(err).Message))
+				apperrors.From(err).Message, originFrom(r)))
 			return
 		}
 		h.projects.Fail(w, r, err)
@@ -426,7 +428,7 @@ func (h *Handler) DeleteLane(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.dirty(access)
-	h.redirectToSettings(w, r, access.Project.Slug, "Lane deleted.")
+	h.redirectBack(w, r, access.Project.Slug, originFrom(r), "Lane deleted.")
 }
 
 // manageable resolves access and refuses anybody who may not change the board.
@@ -492,6 +494,37 @@ func (h *Handler) redirectToSettings(w http.ResponseWriter, r *http.Request, slu
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
+// originFrom reads where a lane form should return to.
+//
+// Read from the query on a GET and from the form on a POST, so the value survives the
+// round trip through the page. Only "board" is recognised; anything else — including
+// something hand-crafted — means the settings page, so it cannot be turned into a
+// redirect anywhere else.
+func originFrom(r *http.Request) string {
+	if r.URL.Query().Get("from") == "board" {
+		return "board"
+	}
+	if r.PostFormValue("return_to") == "board" {
+		return "board"
+	}
+	return ""
+}
+
+// redirectBack sends the person where they came from.
+//
+// Returning to the board is its own confirmation — the lane is visibly different — so the
+// saved message is only worth carrying to the settings page, which has somewhere to show
+// it.
+func (h *Handler) redirectBack(
+	w http.ResponseWriter, r *http.Request, slug, returnTo, saved string,
+) {
+	if returnTo == "board" {
+		http.Redirect(w, r, "/projects/"+slug, http.StatusSeeOther)
+		return
+	}
+	h.redirectToSettings(w, r, slug, saved)
+}
+
 // laneInputFrom parses the lane form.
 //
 // It returns the form state alongside the input so a failure can re-render what the
@@ -508,6 +541,7 @@ func laneInputFrom(r *http.Request) (LaneInput, view.LaneForm, error) {
 		WIPLimit: strings.TrimSpace(r.PostForm.Get("wip_limit")),
 		IsDone:   r.PostForm.Get("is_done") != "",
 		Colours:  colourNames(),
+		ReturnTo: originFrom(r),
 	}
 
 	in := LaneInput{

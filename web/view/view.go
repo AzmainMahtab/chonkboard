@@ -149,6 +149,13 @@ type Candidate struct {
 
 // LaneForm is the lane create/edit form's state.
 type LaneForm struct {
+	// ReturnTo is where Save and Cancel go: "board" when the form was opened from
+	// the board, otherwise the project's settings page.
+	//
+	// Only those two values are ever honoured, and the path is built server-side from
+	// them — a form field carrying a URL is an open redirect waiting to be found.
+	ReturnTo string
+
 	UUID   string
 	Name   string
 	Colour string

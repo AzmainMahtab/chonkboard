@@ -3054,3 +3054,124 @@ func TestChangingAPasswordGoesWhereTheReasonWas(t *testing.T) {
 			"they are still held, so the banner stays")
 	})
 }
+
+// TestALaneFormReturnsWhereYouCameFrom is a reported bug: opening a lane's settings from
+// the board and then saving or cancelling took you to the *project settings* page.
+//
+// The same form is reachable from both places, so neither destination is right on its own.
+// The link that opens it says where to come back to, and the path is built server-side from
+// a known token — a form field holding a URL is an open redirect waiting to be found.
+func TestALaneFormReturnsWhereYouCameFrom(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Lane Nav")
+	cookie, csrf := h.signIn(t, "owner@example.com")
+	lanes := h.laneUUIDs(t, owner, p)
+	base := "/projects/" + p.Slug
+
+	t.Run("the board's links carry their origin", func(t *testing.T) {
+		page := body(h.get(base, cookie))
+		assert.Contains(t, page, "/lanes/new?from=board")
+		assert.Contains(t, page, "/lanes/"+lanes[0]+"/edit?from=board")
+	})
+
+	t.Run("opened from the board, Cancel goes to the board", func(t *testing.T) {
+		form := body(h.get(base+"/lanes/"+lanes[0]+"/edit?from=board", cookie))
+		assert.Contains(t, form, `name="return_to" value="board"`)
+		assert.Contains(t, form, `href="`+base+`"`)
+	})
+
+	t.Run("opened from settings, Cancel goes to settings", func(t *testing.T) {
+		form := body(h.get(base+"/lanes/"+lanes[0]+"/edit", cookie))
+		assert.Contains(t, form, `name="return_to" value=""`)
+		assert.Contains(t, form, `href="`+base+`/settings"`)
+	})
+
+	saves := []struct {
+		name     string
+		path     string
+		form     url.Values
+		wantPath string
+	}{
+		{
+			name: "edit from the board", path: base + "/lanes/" + lanes[0],
+			form:     url.Values{"name": {"Renamed"}, "color": {"teal"}, "return_to": {"board"}},
+			wantPath: base,
+		},
+		{
+			name: "edit from settings", path: base + "/lanes/" + lanes[0],
+			form:     url.Values{"name": {"Renamed"}, "color": {"teal"}},
+			wantPath: base + "/settings",
+		},
+		{
+			name: "add from the board", path: base + "/lanes",
+			form:     url.Values{"name": {"From Board"}, "color": {"rose"}, "return_to": {"board"}},
+			wantPath: base,
+		},
+		{
+			name: "add from settings", path: base + "/lanes",
+			form:     url.Values{"name": {"From Settings"}, "color": {"blue"}},
+			wantPath: base + "/settings",
+		},
+	}
+	for _, tc := range saves {
+		t.Run("save: "+tc.name, func(t *testing.T) {
+			form := tc.form
+			form.Set("csrf_token", csrf)
+
+			rec := h.postForm(tc.path, form, cookie)
+
+			require.Equal(t, http.StatusSeeOther, rec.Code)
+			location, _, _ := strings.Cut(rec.Header().Get("Location"), "?")
+			assert.Equal(t, tc.wantPath, location)
+		})
+	}
+
+	// Returning to the board carries no saved message: the lane is visibly different,
+	// which is its own confirmation, and the board has nowhere to show one.
+	t.Run("only the settings page gets a saved message", func(t *testing.T) {
+		toBoard := h.postForm(base+"/lanes/"+lanes[0], url.Values{
+			"csrf_token": {csrf}, "name": {"X"}, "color": {"teal"}, "return_to": {"board"},
+		}, cookie)
+		assert.NotContains(t, toBoard.Header().Get("Location"), "saved=")
+
+		toSettings := h.postForm(base+"/lanes/"+lanes[0], url.Values{
+			"csrf_token": {csrf}, "name": {"X"}, "color": {"teal"},
+		}, cookie)
+		assert.Contains(t, toSettings.Header().Get("Location"), "saved=")
+	})
+}
+
+// TestReturnToCannotRedirectAnywhereElse is the other half: the field is a token, not a
+// path, and anything unrecognised fails safe.
+func TestReturnToCannotRedirectAnywhereElse(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Lane Nav")
+	cookie, csrf := h.signIn(t, "owner@example.com")
+	lanes := h.laneUUIDs(t, owner, p)
+	base := "/projects/" + p.Slug
+
+	for _, crafted := range []string{
+		"https://evil.example",
+		"//evil.example",
+		"http://evil.example/x",
+		"/admin/users",
+		"javascript:alert(1)",
+		"board ", // trailing space: not the token
+		"BOARD",  // wrong case: not the token
+		"../../..",
+	} {
+		t.Run(crafted, func(t *testing.T) {
+			rec := h.postForm(base+"/lanes/"+lanes[0], url.Values{
+				"csrf_token": {csrf}, "name": {"X"}, "color": {"teal"},
+				"return_to": {crafted},
+			}, cookie)
+
+			require.Equal(t, http.StatusSeeOther, rec.Code)
+			location := rec.Header().Get("Location")
+			assert.True(t, strings.HasPrefix(location, base+"/settings"),
+				"%q redirected to %q instead of failing safe", crafted, location)
+		})
+	}
+}
