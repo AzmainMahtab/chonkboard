@@ -139,12 +139,14 @@ cookie sessions), Redis (session revocation is a row update), and the
 `foreign_keys` is OFF by default in SQLite
 `foreign_keys` is OFF by default in SQLite
 `foreign_keys` is OFF by default in SQLite
+`foreign_keys` is OFF by default in SQLite
 
 Every foreign key in the schema is decoration without
 `_pragma=foreign_keys(ON)` on the DSN. There is a store test that deliberately
 violates an FK and asserts it is raised, purely to prove the pragma is on.
 
 ### 2. SQLite has exactly one writer
+SQLite has exactly one writer
 SQLite has exactly one writer
 SQLite has exactly one writer
 SQLite has exactly one writer
@@ -159,6 +161,7 @@ connection for as long as a board is open.
 `INTEGER PRIMARY KEY AUTOINCREMENT` is not portable
 `INTEGER PRIMARY KEY AUTOINCREMENT` is not portable
 `INTEGER PRIMARY KEY AUTOINCREMENT` is not portable
+`INTEGER PRIMARY KEY AUTOINCREMENT` is not portable
 
 SQLite auto-assigns only for `INTEGER PRIMARY KEY`; PostgreSQL wants `BIGSERIAL`
 or `IDENTITY` and does not know `AUTOINCREMENT`. There is no common syntax, which
@@ -170,6 +173,7 @@ gate, and at this scale it buys nothing.
 The driver will not store a `time.Time` for you
 The driver will not store a `time.Time` for you
 The driver will not store a `time.Time` for you
+The driver will not store a `time.Time` for you
 
 `modernc.org/sqlite` does not recognise a `TIMESTAMPTZ` declared type. A bare
 `time.Time` is stored as Go's `time.String()` (`2026-09-25 19:51:53.518063 +0000
@@ -177,6 +181,7 @@ UTC`), which cannot be scanned back and is not valid PostgreSQL input either.
 Always use `database.Time` / `database.NullTime`.
 
 ### 5. A trimmed timestamp fraction sorts wrongly
+A trimmed timestamp fraction sorts wrongly
 A trimmed timestamp fraction sorts wrongly
 A trimmed timestamp fraction sorts wrongly
 A trimmed timestamp fraction sorts wrongly
@@ -191,6 +196,7 @@ broken ordering RFC3339Nano would produce.
 sqlx does not know the driver name `"sqlite"`
 sqlx does not know the driver name `"sqlite"`
 sqlx does not know the driver name `"sqlite"`
+sqlx does not know the driver name `"sqlite"`
 
 `BindType` returns UNKNOWN, so `Rebind` hands the query back untouched — which
 *works*, because SQLite's placeholder already is `?`. It would break silently the
@@ -201,11 +207,13 @@ day the driver becomes `pgx`. The package registers it in `init` with
 A pragma SQLite cannot parse is silently ignored
 A pragma SQLite cannot parse is silently ignored
 A pragma SQLite cannot parse is silently ignored
+A pragma SQLite cannot parse is silently ignored
 
 Which is why `Open` reads every pragma back on both pools and refuses to start if
 one did not take. Do not "simplify" that away.
 
 ### 8. A port that re-resolves its own authorisation breaks on routes without that parameter
+A port that re-resolves its own authorisation breaks on routes without that parameter
 A port that re-resolves its own authorisation breaks on routes without that parameter
 A port that re-resolves its own authorisation breaks on routes without that parameter
 A port that re-resolves its own authorisation breaks on routes without that parameter
@@ -220,6 +228,7 @@ already has.
 Go's per-package coverage understates a handler tested through the router
 Go's per-package coverage understates a handler tested through the router
 Go's per-package coverage understates a handler tested through the router
+Go's per-package coverage understates a handler tested through the router
 
 Coverage of another package is credited to the package the *test* lives in. The
 project and board handlers are driven from `httpserver`'s tests, so they read ~40%
@@ -230,11 +239,13 @@ per-package number.
 `-race` plus `-coverpkg ./...` produces a zero-count profile
 `-race` plus `-coverpkg ./...` produces a zero-count profile
 `-race` plus `-coverpkg ./...` produces a zero-count profile
+`-race` plus `-coverpkg ./...` produces a zero-count profile
 
 ~2200 lines of profile, every counter zero, total 0.0%. `make cover` omits `-race`
 for exactly this reason; `make check` still runs the race detector.
 
 ### 11. A method value on a nil pointer registers fine and panics on the first request
+A method value on a nil pointer registers fine and panics on the first request
 A method value on a nil pointer registers fine and panics on the first request
 A method value on a nil pointer registers fine and panics on the first request
 A method value on a nil pointer registers fine and panics on the first request
@@ -250,6 +261,7 @@ not exist. Read them even if your task looks unrelated.
 ### 12. A repeated form field with an empty value is a one-element slice
 A repeated form field with an empty value is a one-element slice
 A repeated form field with an empty value is a one-element slice
+A repeated form field with an empty value is a one-element slice
 
 `from_order=` gives `[]string{""}`, not nil. Handed to the move planner that empty
 string is a card uuid not on the board, so the move is refused — and the case it
@@ -260,12 +272,14 @@ of identifiers.
 ### 13. "What changed" derived from "what was written" misses what became absent
 "What changed" derived from "what was written" misses what became absent
 "What changed" derived from "what was written" misses what became absent
+"What changed" derived from "what was written" misses what became absent
 
 `domain.AffectedLanes` reads the placements a plan produced, so a lane whose new order
 is empty appears unaffected — exactly the lane a card was dragged out of, which has
 visibly changed. `card.Service.Move` adds the previous lane explicitly.
 
 ### 14. A UUIDv7 prefix is not a usable short id
+A UUIDv7 prefix is not a usable short id
 A UUIDv7 prefix is not a usable short id
 A UUIDv7 prefix is not a usable short id
 
@@ -275,6 +289,7 @@ keyed on `uuid[:8]` will silently merge them.
 
 ### 15. `r.ParseForm` does not read a multipart body
 `r.ParseForm` does not read a multipart body
+`r.ParseForm` does not read a multipart body
 
 It parses `application/x-www-form-urlencoded` only. On a file upload `r.PostForm` is
 empty, so a CSRF check looking for a token field finds nothing — which made **every
@@ -282,6 +297,7 @@ attachment upload a 403**. Use `r.ParseMultipartForm` for a multipart request, a
 after a body ceiling exists, because parsing one spools it to disk.
 
 ### 16. bluemonday strips `checked`, which silently destroys a checklist
+bluemonday strips `checked`, which silently destroys a checklist
 bluemonday strips `checked`, which silently destroys a checklist
 
 `UGCPolicy` allows no attributes on `input`, so a GFM task list renders `[x]` and `[ ]`
@@ -291,13 +307,35 @@ pattern that admits an **empty** value, because boolean attributes are emitted a
 
 ### 17. The CSP does not make injected markup safe
 The CSP does not make injected markup safe
+The CSP does not make injected markup safe
 
 It blocks script. A form posting to another origin, an iframe, an `onerror` on an image,
 a `javascript:` href and a fixed-position overlay all need none. That is why a card body
 is rendered server-side and sanitised, and why raw HTML is escaped before the sanitiser
 even sees it.
 
-### 18. An out-of-band swap cannot relocate an element
+### 18. An `httptest.ResponseRecorder` cannot be used to test a stream
+An `httptest.ResponseRecorder` cannot be used to test a stream
+
+Reading its `Body` while the handler still writes to it is a data race — passes alone,
+fails under `-race`, and looks like flakiness. Use `httptest.NewServer` and a real
+incremental reader, which is what the code faces anyway.
+
+### 19. `htmx.trigger` fires the bare event name, not the `sse:` one
+`htmx.trigger` fires the bare event name, not the `sse:` one
+
+`hx-trigger="sse:board-dirty"` matches an SSE message only. A reconnect handler calling
+`htmx.trigger(el, "board-dirty")` silently does nothing unless the element lists both.
+
+### 20. A table test over a map is order-dependent the moment cases are compared
+A table test over a map is order-dependent the moment cases are compared
+
+Collecting results from a `map` range and then comparing them positionally passes or
+fails by luck. Use a slice when order matters, and normalise each case against its own
+input rather than a positional assumption.
+
+### 21. An out-of-band swap cannot relocate an element
+An out-of-band swap cannot relocate an element
 An out-of-band swap cannot relocate an element
 An out-of-band swap cannot relocate an element
 An out-of-band swap cannot relocate an element
@@ -307,7 +345,8 @@ move a card from one lane's container into another's. This is why live updates
 broadcast whole lanes rather than single cards — correct by construction, a few
 hundred bytes. The plan originally said single cards; that was wrong.
 
-### 19. `htmx:beforeSwap` never fires for an SSE message
+### 22. `htmx:beforeSwap` never fires for an SSE message
+`htmx:beforeSwap` never fires for an SSE message
 `htmx:beforeSwap` never fires for an SSE message
 `htmx:beforeSwap` never fires for an SSE message
 `htmx:beforeSwap` never fires for an SSE message
@@ -322,7 +361,8 @@ Related, and verified by reading the vendored htmx source rather than assumed:
 htmx's out-of-band pass runs **before** the main swap, so `hx-swap="none"` still
 applies OOB content. That is the whole basis of the live board.
 
-### 20. A class name assembled at runtime is invisible to Tailwind
+### 23. A class name assembled at runtime is invisible to Tailwind
+A class name assembled at runtime is invisible to Tailwind
 A class name assembled at runtime is invisible to Tailwind
 A class name assembled at runtime is invisible to Tailwind
 A class name assembled at runtime is invisible to Tailwind
@@ -331,7 +371,8 @@ Tailwind scans source text. `"bg-lane-" + color` produces nothing. Helpers that
 pick a class return the **whole literal** — see `web/components/helpers.go`. The
 failure mode is an element that is silently unstyled, with no error anywhere.
 
-### 21. In Tailwind v4, `@apply` takes only real utilities
+### 24. In Tailwind v4, `@apply` takes only real utilities
+In Tailwind v4, `@apply` takes only real utilities
 In Tailwind v4, `@apply` takes only real utilities
 In Tailwind v4, `@apply` takes only real utilities
 In Tailwind v4, `@apply` takes only real utilities
@@ -340,7 +381,8 @@ A bare class in `@layer components` cannot be `@apply`-ed; the build fails with
 "Cannot apply unknown utility class". Declare it with `@utility` instead. That is
 why `btn`, `field`, and `form-label` are `@utility` blocks in `input.css`.
 
-### 22. templ's `attr?={ }` takes a bool and cannot omit a value-carrying attribute
+### 25. templ's `attr?={ }` takes a bool and cannot omit a value-carrying attribute
+templ's `attr?={ }` takes a bool and cannot omit a value-carrying attribute
 templ's `attr?={ }` takes a bool and cannot omit a value-carrying attribute
 templ's `attr?={ }` takes a bool and cannot omit a value-carrying attribute
 
@@ -350,7 +392,8 @@ condition in if statement", pointing at generated code. There is no way to spell
 `templ.Attributes` spread from a plain `.go` helper, and let the helper own the whole
 attribute, because HTML keeps only one of a duplicate and silently drops the other.
 
-### 23. Do not import `github.com/a-h/templ` in a `.templ` file
+### 26. Do not import `github.com/a-h/templ` in a `.templ` file
+Do not import `github.com/a-h/templ` in a `.templ` file
 Do not import `github.com/a-h/templ` in a `.templ` file
 Do not import `github.com/a-h/templ` in a `.templ` file
 Do not import `github.com/a-h/templ` in a `.templ` file
@@ -358,7 +401,8 @@ Do not import `github.com/a-h/templ` in a `.templ` file
 templ injects that import into the generated code. Importing it yourself gives
 "templ redeclared in this block". `templ.Attributes` is available without it.
 
-### 24. `templ generate` before `go build`
+### 27. `templ generate` before `go build`
+`templ generate` before `go build`
 `templ generate` before `go build`
 `templ generate` before `go build`
 `templ generate` before `go build`
@@ -368,7 +412,8 @@ A bare `go build` compiles against whatever was generated last. `make build`,
 gitignored, so a fresh clone that skips generate will not compile at all — which is
 the better failure.
 
-### 25. Echo suppression must be per tab, not per session
+### 28. Echo suppression must be per tab, not per session
+Echo suppression must be per tab, not per session
 Echo suppression must be per tab, not per session
 Echo suppression must be per tab, not per session
 Echo suppression must be per tab, not per session
@@ -377,7 +422,8 @@ Two tabs of the same account share a session. Suppressing a broadcast by session
 leaves the second tab stale. `board.js` generates a per-tab id, sends it as
 `X-Client-Id`, and the hub skips exactly that subscriber.
 
-### 26. A non-blocking send still races a close
+### 29. A non-blocking send still races a close
+A non-blocking send still races a close
 A non-blocking send still races a close
 A non-blocking send still races a close
 A non-blocking send still races a close
@@ -389,7 +435,8 @@ closed channel`, found by a `-race` test with 50 goroutines. Sends now happen
 `select` has a `default`. Holding the read lock excludes `remove()`, which is the
 only thing that closes a channel.
 
-### 27. Every line of an SSE payload needs its own `data:` prefix
+### 30. Every line of an SSE payload needs its own `data:` prefix
+Every line of an SSE payload needs its own `data:` prefix
 Every line of an SSE payload needs its own `data:` prefix
 Every line of an SSE payload needs its own `data:` prefix
 Every line of an SSE payload needs its own `data:` prefix
@@ -398,7 +445,8 @@ An HTML fragment is multi-line. A bare newline inside `data:` terminates the eve
 delivering truncated markup that swaps successfully and looks like a rendering bug.
 `sse.encode` handles it and has a test.
 
-### 28. `vendor/` in `.gitignore` is not anchored
+### 31. `vendor/` in `.gitignore` is not anchored
+`vendor/` in `.gitignore` is not anchored
 `vendor/` in `.gitignore` is not anchored
 `vendor/` in `.gitignore` is not anchored
 `vendor/` in `.gitignore` is not anchored
@@ -406,7 +454,8 @@ delivering truncated markup that swaps successfully and looks like a rendering b
 An unanchored `vendor/` also matches `web/static/vendor/`, silently excluding the
 pinned front-end libraries that are the entire point of vendoring. It is `/vendor/`.
 
-### 29. Hiding a control is not authorization
+### 32. Hiding a control is not authorization
+Hiding a control is not authorization
 Hiding a control is not authorization
 Hiding a control is not authorization
 Hiding a control is not authorization
@@ -415,7 +464,8 @@ Every board-settings route is behind a manager-or-above check so a hand-made
 `POST` with a member's cookie returns 403. The test plan verifies this with
 `curl`, because assuming it is how it stops being true.
 
-### 30. Go durations have no day unit
+### 33. Go durations have no day unit
+Go durations have no day unit
 Go durations have no day unit
 Go durations have no day unit
 Go durations have no day unit
@@ -446,6 +496,9 @@ Go durations have no day unit
 | Attachment bytes on disk | `internal/platform/filestore` |
 | Comments and attachments | `internal/card/{comments,attachments}.go` |
 | The global request-body ceiling | `internal/platform/middleware/bodylimit.go` |
+| The SSE hub, and its leak check | `internal/shared/sse/hub.go` |
+| Subscriber counts, operator only | `internal/platform/httpserver/livedebug.go` |
+| The drag guard and reconnect resync | `web/static/js/board.js` |
 | Lane and project forms | `web/pages/{projects,project_settings}.templ` |
 | CSRF token for a fragment's form | `web/view/csrf.go` |
 | Argon2id hashing, and the test fake | `internal/shared/password` |

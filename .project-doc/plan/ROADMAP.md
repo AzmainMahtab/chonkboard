@@ -18,8 +18,8 @@ nothing to broadcast until something can change.
 | 3 | Projects, lanes, membership | **done** (2026-09-26) |
 | 4 | Cards core | **done** (2026-09-26) |
 | 5 | Rich card | **done** (2026-09-26) |
-| 6 | Live board | next |
-| 7 | Admin console | not started |
+| 6 | Live board | **done** (2026-09-26) |
+| 7 | Admin console | next |
 | 8 | Harden and ship | not started |
 
 ---
@@ -450,27 +450,64 @@ exercised without a browser. It is part of the outstanding browser check.
 
 ---
 
-## Phase 6 — Live board
+## Phase 6 — Live board · done
 
-**Why here.** The hub and the wire format exist from phase 0; this is the phase
-that connects them to real mutations.
+**Why here.** The hub and the wire format existed from phase 0; this is the phase that
+connected them to real mutations — and most of the connecting had already happened in
+phase 4, where dropping working broadcast to "save it for phase 6" would have been a
+regression.
 
-**Build**
+**Already in place before this phase.** The hub with its per-room fan-out, the
+heartbeat, the `ExceptClient` echo filter, the SSE wire encoder, `X-Client-Id` threaded
+from `board.js` through the move, the drag guard on `htmx:sseBeforeMessage`, and the
+broadcast after every card mutation.
 
-- Broadcast on every card and lane mutation, **after** the transaction commits.
-  What is broadcast is what was stored.
-- Whole affected lanes as `hx-swap-oob` fragments for card changes; a
-  `board-dirty` signal for structural changes.
-- `X-Client-Id` threaded from `board.js` through every mutation into
-  `sse.Event.ExceptClient`, so a tab never receives its own change.
-- Reconnect: the browser's EventSource retries on its own; the board re-fetches
-  whole on `htmx:sseOpen` so a gap while disconnected cannot leave it stale.
-- Subscriber count on `/healthz` (or a debug route) so a leak is observable.
+**Delivered here**
 
-**Gate.** Two browsers: a move in one appears in the other in roughly 100ms and
-never interrupts a local drag. Killing the server and restarting it has both
-boards reconnect and re-sync without a manual refresh. Closing a tab drops its
-subscriber — the hub's room count returns to zero.
+- **`board-dirty` on every structural change** — lane added, renamed, recoloured,
+  reordered, deleted; label added, renamed, deleted; project renamed. `project.Handler`
+  owns the one `Dirty` path and the board handler signals through it
+- **Reconnect resync** — `htmx:sseOpen` re-fetches the whole board, skipping the first
+  open. Events sent while disconnected are gone and nothing replays them, so a board
+  that merely resumed listening would sit quietly stale
+- **`hx-trigger="sse:board-dirty, board-dirty"`** — the server's signal and the
+  reconnect trigger converge on one re-fetch
+- **`GET /debug/live`** — operator-only subscriber counts, refusing others with 404, so
+  a hub leak is observable rather than invisible
+- **`Hub.RoomCounts`** — a snapshot built under the read lock
+- Hub tests for the leak (200 subscribe/cancel cycles with a goroutine count),
+  cancel-after-close, an empty room, and a payload-free signal
+
+**Gate — met.** `make check` and `make check-postgres` green, run three times for
+flakiness. Walked against a running binary with two live `curl -N` streams:
+
+| Check | Result |
+|---|---|
+| Two tabs watching one board | `rooms=1, total_subscribers=2` |
+| Tab A moves a card | **A receives nothing; B receives `lane-updated`** |
+| B's payload | two `hx-swap-oob` lane fragments, the card title present |
+| **Delivery latency over ten moves** | **min 9ms, median 10ms, max 11ms — all under 100ms** |
+| A lane added | **both** tabs receive `board-dirty` |
+| Heartbeat | `: connected` then `: ping` comment frames |
+| Closing tab A | subscribers 2 → 1 |
+| Closing tab B | **rooms 0, subscribers 0** |
+| SIGTERM with a stream open | the stream ends cleanly |
+| Restart | subscribers reset to 0; the session survives; the board re-renders from the database |
+| A fresh stream after the restart | receives `board-dirty` |
+| A stream with no `?client=` | 400, nothing subscribed |
+| A stream on a board with no grant | 404, nothing subscribed |
+| 200 subscribe/cancel cycles | no goroutine growth, every room freed |
+
+**Two test defects found, both mine.** An `httptest.ResponseRecorder` cannot be used to
+test a stream — reading its `Body` while the handler writes is a data race, which passed
+alone and failed under `-race`. And `TestSignInFailureIsGenericAndSetsNoCookie` ranged a
+**map** and then compared the two responses positionally, so it had been passing by luck
+since phase 2.
+
+**Not verified.** Everything on this list is server-side. **The drag guard has still
+never run in a browser** — `htmx:sseBeforeMessage` deferring a swap until the drop lands
+is the one mechanism on the critical path that cannot be exercised without a pointer, and
+it is what stops a card being swapped out from under the hand holding it.
 
 ---
 

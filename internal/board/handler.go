@@ -34,6 +34,20 @@ func NewHandler(svc *Service, projects *project.Handler, log *slog.Logger) *Hand
 	return &Handler{svc: svc, projects: projects, log: log}
 }
 
+// dirty tells every tab on this board to re-fetch the whole thing.
+//
+// Structural changes — a lane added, renamed, recoloured, reordered or deleted, or a
+// label changed — are broadcast as a signal rather than as a fragment. A lane arriving
+// out of band cannot *relocate* an element, so an added or reordered lane cannot be
+// expressed as an out-of-band swap at all; and a whole-board re-fetch is rare enough
+// that making it surgical would be work spent on the uncommon case.
+//
+// No ExceptClient: a structural change comes from a full-page form post, not from a
+// fetch carrying X-Client-Id, and the tab that made it has been redirected to the
+// settings page anyway. Any other tab this person has open on the board needs the
+// signal as much as anybody else's.
+func (h *Handler) dirty(access *project.Access) { h.projects.Dirty(access) }
+
 // LaneSummaries implements project.BoardShape: the lanes of one board.
 //
 // The subject is passed in rather than resolved here. Resolving it from the request
@@ -121,6 +135,7 @@ func (h *Handler) CreateLabel(w http.ResponseWriter, r *http.Request) {
 		h.labelFailure(w, r, access, form, err)
 		return
 	}
+	h.dirty(access)
 	h.redirectToSettings(w, r, access.Project.Slug, "Label added.")
 }
 
@@ -144,6 +159,7 @@ func (h *Handler) UpdateLabel(w http.ResponseWriter, r *http.Request) {
 		h.labelFailure(w, r, access, form, err)
 		return
 	}
+	h.dirty(access)
 	h.redirectToSettings(w, r, access.Project.Slug, "Label saved.")
 }
 
@@ -159,6 +175,7 @@ func (h *Handler) DeleteLabel(w http.ResponseWriter, r *http.Request) {
 		h.projects.Fail(w, r, err)
 		return
 	}
+	h.dirty(access)
 	h.redirectToSettings(w, r, access.Project.Slug, "Label deleted.")
 }
 
@@ -245,6 +262,7 @@ func (h *Handler) CreateLane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.dirty(access)
 	h.redirectToSettings(w, r, access.Project.Slug, "Lane added.")
 }
 
@@ -296,6 +314,7 @@ func (h *Handler) UpdateLane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.dirty(access)
 	h.redirectToSettings(w, r, access.Project.Slug, "Lane saved.")
 }
 
@@ -330,6 +349,7 @@ func (h *Handler) MoveLane(w http.ResponseWriter, r *http.Request) {
 		h.projects.Fail(w, r, err)
 		return
 	}
+	h.dirty(access)
 	h.redirectToSettings(w, r, access.Project.Slug, "Lanes reordered.")
 }
 
@@ -349,6 +369,8 @@ func (h *Handler) ReorderLanes(w http.ResponseWriter, r *http.Request) {
 		h.projects.Fail(w, r, err)
 		return
 	}
+
+	h.dirty(access)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -403,6 +425,7 @@ func (h *Handler) DeleteLane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.dirty(access)
 	h.redirectToSettings(w, r, access.Project.Slug, "Lane deleted.")
 }
 

@@ -5,12 +5,16 @@ import "github.com/AzmainMahtab/chonkboard/web/view"
 // Board is the whole lane rail. It is also the reconnect target: a structural
 // change (lane added, renamed, reordered, deleted) broadcasts a board-dirty
 // signal and the client re-fetches this fragment whole.
+//
+// Two triggers, one target. `sse:board-dirty` is the server's signal; the bare
+// `board-dirty` is what board.js fires after a reconnect, so a gap in the stream and
+// a structural change converge on one code path rather than two.
 templ Board(b view.Board) {
 	<div
 		id="board"
 		data-project-uuid={ b.ProjectUUID }
 		hx-get={ "/projects/" + b.ProjectSlug + "/board" }
-		hx-trigger="sse:board-dirty"
+		hx-trigger="sse:board-dirty, board-dirty"
 		hx-swap="outerHTML"
 		class="flex h-[calc(100dvh-3rem)] items-start gap-3 overflow-x-auto px-3 py-3 sm:px-5"
 	>

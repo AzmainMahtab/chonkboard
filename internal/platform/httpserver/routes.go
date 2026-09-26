@@ -85,6 +85,10 @@ func Router(d Deps) http.Handler {
 		ar.Group(func(pr chi.Router) {
 			pr.Use(middleware.RequirePasswordChange(d.SessionCfg))
 
+			// Operator-only observability. Not on /healthz: room counts say how
+			// many projects are in use and who is watching them.
+			pr.Get("/debug/live", liveStatus(d.Hub))
+
 			pr.Get(auth.AccountPath, d.Auth.AccountPage)
 			pr.Get(auth.PasswordPath, d.Auth.AccountPage)
 			pr.Post(auth.PasswordPath, d.Auth.ChangePassword)

@@ -84,7 +84,7 @@ not exist.
 | POST | `/cards/{c}/archive` | 303 or fragment | `archived=1` or `0` |
 | POST | `/cards/{c}/delete` | 303 or fragment | **own card only, for a member** |
 | POST | `/cards/{c}/move` | **204** | the drag; broadcasts over SSE |
-| GET | `/projects/{p}/events` | `text/event-stream` | SSE; requires `?client=<tab id>` |
+| GET | `/projects/{p}/events` | `text/event-stream` | SSE; **requires `?client=<tab id>`** — without one there is no way to skip the originating tab |
 
 Archive and delete answer an HTMX request with the lane fragment and an
 `HX-Trigger: card-gone`, and a plain form post with a redirect to the board — there is
@@ -156,6 +156,7 @@ somebody who is not a member is **404**.
 
 | Method | Path | Returns | Notes |
 |---|---|---|---|
+| GET | `/debug/live` | JSON | SSE subscriber counts per board; **404 to anybody else** |
 | GET | `/projects/new` | page | the create form |
 | POST | `/projects` | 303 | project + creator's manager grant + five lanes, one transaction |
 | POST | `/projects/{p}/archive` | 303 | toggles; archived boards leave every list |
@@ -235,6 +236,38 @@ visibly changed.
 On any non-204 the client appends the toast and re-fetches both affected lanes via
 `GET /lanes/{l}/fragment`, so the board snaps back to whatever the database
 actually says rather than to a guessed undo.
+
+## The live wire
+
+| Event | Payload | Sent when |
+|---|---|---|
+| `lane-updated` | one or more `hx-swap-oob` lane fragments | a card is created, edited, moved, archived, deleted, commented on, or has a file attached |
+| `board-dirty` | nothing | a lane or label changes, or the project is renamed |
+
+**A card change is surgical; a structural change is a signal.** Not a performance
+trade-off: an out-of-band swap cannot *relocate* an element, so a lane that was added,
+reordered or deleted has no existing element to replace and no fragment can express it.
+The client re-fetches `/projects/{p}/board` whole, which is rare and always correct.
+
+`lane-updated` carries `ExceptClient` from the request's `X-Client-Id`, so the tab that
+made the change never receives it — otherwise htmx would swap a card out from under the
+hand that just dropped it. `board-dirty` deliberately does not: it comes from a full-page
+form post rather than a fetch, and any *other* tab the same person has open still needs
+it.
+
+A lane the card **left** is included even when the plan wrote no placement for it. An
+emptied lane produces none, and it is exactly the lane that visibly changed.
+
+The board element carries **two** triggers for one re-fetch:
+
+```html
+hx-trigger="sse:board-dirty, board-dirty"
+```
+
+The first is the server's signal; the second is what `board.js` fires on
+`htmx:sseOpen` after a reconnect. Events sent while a client was disconnected are gone
+and nothing replays them, so a board that merely resumed listening would sit quietly
+stale. The first open is skipped — the page was just rendered from the database.
 
 ## Middleware order
 

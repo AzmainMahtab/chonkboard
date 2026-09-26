@@ -12,8 +12,8 @@ Phase definitions and gates: `../plan/ROADMAP.md`.
 | 3 | Projects, lanes, membership | **done** | yes, the member wall walked with curl |
 | 4 | Cards core | **done** | yes, every move case walked with curl |
 | 5 | Rich card | **done** | yes, including the attachment-leak check |
-| 6 | Live board | **next** | — |
-| 7 | Admin console | not started | — |
+| 6 | Live board | **done** | yes, two live streams, 10ms median |
+| 7 | Admin console | **next** | — |
 | 8 | Harden and ship | not started | — |
 
 Repository: `/home/odin/repo/chonkboard`, its own git repo. **Nothing is committed
@@ -53,9 +53,70 @@ commit was left to the owner.
 - Every card can be moved from its own menu as well as by dragging, so the board is
   usable without a pointer.
 
-What is missing is polish on the live path — the drag guard, reconnect behaviour and
-the whole-board refresh after a structural change — plus the admin console, and
-shipping. Broadcast itself already works.
+- **The board is live.** A card change in one tab reaches every other tab on that
+  board in about 10ms, and never reaches the tab that made it. A structural change —
+  a lane added, renamed, reordered or deleted — tells every tab to re-fetch. A tab that
+  was disconnected re-syncs on reconnect rather than sitting stale.
+
+What is missing is the admin console (creating accounts, resetting passwords,
+suspending people) and shipping — backups, graceful shutdown hardening, the 404/500
+pages, and the responsive pass.
+
+---
+
+## Phase 6 — done
+
+### Already in place before this phase
+
+The hub with its per-room fan-out, the heartbeat, the `ExceptClient` echo filter, the
+wire encoder, `X-Client-Id` threaded through the move, the drag guard, and the broadcast
+after every card mutation. Phase 4 wired the real card service into it rather than
+holding it back, because dropping working broadcast would have been a regression.
+
+### Built here
+
+- **`board-dirty` on every structural change** — lanes, labels, and a project rename.
+  `project.Handler.Dirty` is the one path; the board handler signals through it.
+- **Reconnect resync** — `htmx:sseOpen` re-fetches the whole board, skipping the first
+  open. Nothing replays events missed while disconnected, so a board that merely resumed
+  listening would sit quietly stale.
+- **`GET /debug/live`** — operator-only subscriber counts, 404 to anybody else, so a hub
+  leak is observable instead of invisible.
+- **Hub tests** for the goroutine leak, cancel-after-close, empty rooms, and a
+  payload-free signal.
+
+### Gate: met
+
+`make check` and `make check-postgres` green, run three times for flakiness. Walked
+against a running binary with two live `curl -N` streams — the full table is in
+`../plan/ROADMAP.md`. The rows that matter:
+
+| Check | Result |
+|---|---|
+| Tab A moves a card | **A receives nothing; B receives both lanes** |
+| **Delivery latency, ten moves** | **min 9ms, median 10ms, max 11ms** |
+| A lane added | both tabs receive `board-dirty` |
+| Closing both tabs | **rooms 0, subscribers 0** |
+| Restart with a stream open | stream ends cleanly, session survives, board re-renders |
+| 200 subscribe/cancel cycles | no goroutine growth |
+
+### Two test defects, both mine
+
+An `httptest.ResponseRecorder` cannot be used to test a stream: reading its `Body` while
+the handler writes is a data race. The tests passed alone and failed under `-race` — the
+shape of bug that gets dismissed as flakiness. Rewritten against `httptest.NewServer`,
+which is what the code actually faces.
+
+And `TestSignInFailureIsGenericAndSetsNoCookie` ranged a **map**, then compared the two
+responses positionally while normalising each against a different hard-coded address. It
+had been passing by luck since phase 2; phase 6 happened to shuffle the order.
+
+### Still not verified in a browser
+
+Everything above is server-side. **The drag guard has never run in a browser.**
+`htmx:sseBeforeMessage` deferring an incoming swap until the drop lands is the one
+mechanism on the critical path that needs a pointer to exercise, and it is what stops a
+card being pulled out from under the hand holding it.
 
 ---
 
@@ -435,33 +496,36 @@ Nothing from phase 0 remains on any route.
 | Stylesheet | **7.2 KB gzipped** |
 | JavaScript | **52 KB gzipped**, four vendored libraries plus `board.js` |
 | Migrations | 5 files, 237 lines of SQL |
-| Go files | 95 hand-written |
+| Go files | 96 hand-written |
 | templ components | 21 |
-| Tests | 351 default + 9 PostgreSQL-tagged |
-| Aggregate coverage | 70.8% of statements |
+| Tests | 365 default + 9 PostgreSQL-tagged |
+| Aggregate coverage | 72.1% of statements |
+| Live update latency | 10 ms median, measured over ten moves |
 
 ---
 
-## Phase 6 — next
+## Phase 7 — next
 
-The live board's remaining half. Broadcast already works — the hub, its heartbeat and
-the per-tab echo filter were built in phase 0, and phase 4 wired the real card service
-into them, so a move in one tab already appears in another.
+The admin console: creating accounts, the one-time password reveal, resetting a
+password, suspending and reinstating people, and the operator's view of every project
+and who has access to what.
 
-What phase 6 owns:
+Most of the service layer exists. `auth.Service` already has the bootstrap,
+`RevokeSessionsForUser` and `ChangeOwnPassword`; `auth.Store` has user CRUD;
+`domain.GeneratePassword` produces the confusable-free one-time password; and
+`chonkboard seed user` already performs the whole create-and-reveal flow on the command
+line. What is missing is a service method for an operator resetting *somebody else's*
+password, and the pages.
 
-- **The drag guard.** `board.js` sets a `dragging` flag and `htmx:sseBeforeMessage`
-  defers an incoming swap until the drop lands. Without it an arriving update can swap
-  a card out from under the hand still holding it. **This is the one thing on the
-  critical path that has never been exercised in a browser.**
-- **`board-dirty` for structural changes.** A lane added, renamed, recoloured, reordered
-  or deleted currently updates only the tab that did it; the others need a whole-board
-  re-fetch. The board fragment and its `hx-trigger="sse:board-dirty"` are already in
-  place — what is missing is the broadcast from the board handler.
-- **Reconnect.** The SSE extension retries on its own; what needs checking is that a
-  tab which missed events while disconnected re-fetches rather than sitting stale.
-- **Hub tests** — subscribe, broadcast, unsubscribe, a slow client dropped rather than
-  blocking a write, and no goroutine leak after unsubscribe.
+Three things already decided and worth not re-deriving:
 
-The gate is two browsers side by side: a move in one appears in the other in about
-100ms, and never interrupts a local drag.
+- A generated password is **shown exactly once**, never emailed, never logged, and
+  `must_change_password` is set. Losing it means resetting it — that is the recovery
+  path, and the reason no plaintext copy exists anywhere.
+- A reset **revokes every session that user holds**, or a compromised session survives
+  the reset meant to end it.
+- Suspending revokes every session immediately, and the session middleware already
+  refuses a suspended user on every request.
+
+The gate is the whole flow end to end: create an account, hand over the credentials,
+grant a project, reset the password, suspend, reinstate.

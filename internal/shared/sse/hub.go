@@ -122,3 +122,20 @@ func (h *Hub) Rooms() int {
 	defer h.mu.RUnlock()
 	return len(h.rooms)
 }
+
+// RoomCounts returns the number of subscribers per room.
+//
+// A snapshot: the map is built under the read lock and handed over, so a caller cannot
+// hold the lock while it renders. Rooms with no subscribers are removed on the last
+// unsubscribe, so an entry here means somebody is genuinely watching — which is what
+// makes this a leak check rather than a list of every project ever opened.
+func (h *Hub) RoomCounts() map[string]int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	out := make(map[string]int, len(h.rooms))
+	for room, clients := range h.rooms {
+		out[room] = len(clients)
+	}
+	return out
+}

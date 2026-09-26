@@ -14,6 +14,7 @@ import (
 	"github.com/AzmainMahtab/chonkboard/internal/shared/authctx"
 	"github.com/AzmainMahtab/chonkboard/internal/shared/authz"
 	"github.com/AzmainMahtab/chonkboard/internal/shared/render"
+	"github.com/AzmainMahtab/chonkboard/internal/shared/sse"
 	"github.com/AzmainMahtab/chonkboard/web/components"
 	"github.com/AzmainMahtab/chonkboard/web/pages"
 	"github.com/AzmainMahtab/chonkboard/web/view"
@@ -42,6 +43,7 @@ type HandlerConfig struct {
 type Handler struct {
 	svc   *Service
 	board BoardShape
+	hub   *sse.Hub
 	cfg   HandlerConfig
 	log   *slog.Logger
 }
@@ -51,8 +53,19 @@ type Handler struct {
 // board may be nil at construction: the board handler needs this one for access
 // resolution, so the two are genuinely mutually dependent and one of the two edges
 // has to be set afterwards. UseBoardShape is that edge.
-func NewHandler(svc *Service, board BoardShape, cfg HandlerConfig, log *slog.Logger) *Handler {
-	return &Handler{svc: svc, board: board, cfg: cfg, log: log}
+func NewHandler(
+	svc *Service, board BoardShape, hub *sse.Hub, cfg HandlerConfig, log *slog.Logger,
+) *Handler {
+	return &Handler{svc: svc, board: board, hub: hub, cfg: cfg, log: log}
+}
+
+// Dirty tells every tab on a board to re-fetch it. Exported so the board handler
+// signals through the same path rather than holding a second reference to the hub.
+func (h *Handler) Dirty(access *Access) {
+	if h.hub == nil {
+		return
+	}
+	h.hub.Broadcast(access.Project.UUID, sse.Event{Name: "board-dirty"})
 }
 
 // UseBoardShape supplies the board slice's lane reader. Called once, at wiring.
@@ -186,6 +199,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The board's name is in its header, so a rename is a structural change.
+	h.Dirty(access)
 	h.redirectToSettings(w, r, access.Project.Slug, "Details saved.")
 }
 

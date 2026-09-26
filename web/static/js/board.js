@@ -13,6 +13,17 @@
     String(Date.now()) + Math.random().toString(16).slice(2);
 
   var dragging = false;
+
+  /* streamUp tracks whether the stream is currently up; awaitingFirstOpen
+     distinguishes the initial connection from a reconnect. Without the second flag
+     every page load would fetch the board twice — once to render it, once because the
+     stream opened.
+
+     Named streamUp rather than `live` because two functions below take a local
+     `live` for the #live element, and a shadowed flag is a bug waiting for the next
+     edit. */
+  var streamUp = false;
+  var awaitingFirstOpen = true;
   var deferred = [];
 
   function csrf() {
@@ -204,6 +215,34 @@
   document.body.addEventListener("htmx:oobAfterSwap", bindLanes);
 
   document.body.addEventListener("htmx:sseError", function () {
+    streamUp = false;
     toast("Live updates dropped. Reconnecting…");
   });
+
+  /* On reconnect, re-fetch the whole board.
+
+     EventSource retries on its own, but events sent while it was disconnected are
+     simply gone — nothing replays them. A board that only resumed listening would
+     sit quietly stale, which is worse than visibly broken because nobody notices.
+
+     Skipped on the first open: the page was just rendered from the database, so
+     there is no gap to close and a fetch here would double every page load. */
+  document.body.addEventListener("htmx:sseOpen", function () {
+    if (streamUp) return;
+    streamUp = true;
+
+    if (awaitingFirstOpen) {
+      awaitingFirstOpen = false;
+      return;
+    }
+    refetchBoard();
+  });
+
+  /* Ask the board to reload itself. The same path a board-dirty signal takes, so a
+     reconnect and a structural change converge on one implementation. */
+  function refetchBoard() {
+    var board = document.getElementById("board");
+    if (!board || !window.htmx) return;
+    window.htmx.trigger(board, "board-dirty");
+  }
 })();

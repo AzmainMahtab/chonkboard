@@ -1,6 +1,7 @@
 package httpserver_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -53,6 +54,7 @@ type harness struct {
 	projectService *project.Service
 	boardService   *board.Service
 	cardService    *card.Service
+	hub            *sse.Hub
 	loginByIP      *ratelimit.Limiter
 	loginByEmail   *ratelimit.Limiter
 	ctx            context.Context
@@ -71,12 +73,12 @@ func newHarness(t *testing.T) *harness {
 	boardService := board.NewService(board.NewStore(tx), tx, log)
 	projectService := project.NewService(project.NewStore(tx), service, boardService, tx, log)
 
-	projectHandler := project.NewHandler(projectService, nil,
+	hub := sse.NewHub(log)
+	projectHandler := project.NewHandler(projectService, nil, hub,
 		project.HandlerConfig{AssetSuffix: "?v=test"}, log)
 	boardHandler := board.NewHandler(boardService, projectHandler, log)
 	projectHandler.UseBoardShape(boardHandler)
 
-	hub := sse.NewHub(log)
 	uploads, err := filestore.NewDisk(filepath.Join(t.TempDir(), "uploads"))
 	require.NoError(t, err)
 	cardService := card.NewService(card.NewStore(tx), boardService, uploads,
@@ -116,8 +118,8 @@ func newHarness(t *testing.T) *harness {
 	return &harness{
 		router: router, store: store, service: service,
 		projectService: projectService, boardService: boardService,
-		cardService: cardService,
-		loginByIP:   loginByIP, loginByEmail: loginByEmail,
+		cardService: cardService, hub: hub,
+		loginByIP: loginByIP, loginByEmail: loginByEmail,
 		ctx: context.Background(),
 	}
 }
@@ -275,31 +277,45 @@ func TestSignInFailureIsGenericAndSetsNoCookie(t *testing.T) {
 	h := newHarness(t)
 	h.addUser(t, "known@example.com", authdomain.RoleMember)
 
-	tests := map[string]url.Values{
-		"wrong password":  {"email": {"known@example.com"}, "password": {"wrong password here"}},
-		"unknown address": {"email": {"nobody@example.com"}, "password": {testPassword}},
+	// A slice, not a map: the comparison below depends on which response is which,
+	// and map iteration order is random. As a map this passed or failed by luck.
+	tests := []struct {
+		name  string
+		email string
+		form  url.Values
+	}{
+		{
+			name:  "wrong password",
+			email: "known@example.com",
+			form:  url.Values{"email": {"known@example.com"}, "password": {"wrong password here"}},
+		},
+		{
+			name:  "unknown address",
+			email: "nobody@example.com",
+			form:  url.Values{"email": {"nobody@example.com"}, "password": {testPassword}},
+		},
 	}
 
-	var messages []string
-	for name, form := range tests {
-		t.Run(name, func(t *testing.T) {
-			rec := h.postForm(auth.LoginPath, form, nil)
+	normalised := make([]string, 0, len(tests))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := h.postForm(auth.LoginPath, tc.form, nil)
 
 			assert.Equal(t, http.StatusUnauthorized, rec.Code)
 			assert.Nil(t, sessionCookie(rec), "no cookie on a failed sign-in")
 
 			page := body(rec)
 			assert.Contains(t, page, "That email or password is wrong.")
-			messages = append(messages, page)
+			// Each response is normalised against its own address, so the two are
+			// comparable whatever they were.
+			normalised = append(normalised, strings.ReplaceAll(page, tc.email, "<ADDRESS>"))
 		})
 	}
 
-	require.Len(t, messages, 2)
-	// Account enumeration: the two responses must be indistinguishable apart
-	// from the address echoed back into the form.
-	assert.Equal(t,
-		strings.Replace(messages[0], "known@example.com", "X", 1),
-		strings.Replace(messages[1], "nobody@example.com", "X", 1))
+	require.Len(t, normalised, 2)
+	// Account enumeration: the two responses must be indistinguishable apart from
+	// the address echoed back into the form.
+	assert.Equal(t, normalised[0], normalised[1])
 }
 
 func TestASignedInUserReachesTheProjectList(t *testing.T) {
@@ -1968,4 +1984,327 @@ func TestDeletingALabelRemovesItFromEveryCard(t *testing.T) {
 
 	assert.NotContains(t, body(h.get("/projects/"+p.Slug, cookie)), ">bug<",
 		"the assignment cascades with the label")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: the live board.
+// ---------------------------------------------------------------------------
+
+// watch subscribes to a board's stream the way a browser does, and returns the frames
+// it receives plus a func to stop.
+//
+// Over a real httptest server rather than a ResponseRecorder. A recorder cannot be
+// streamed: reading its Body while the handler still writes to it is a data race, which
+// -race duly caught. A real server gives a real incremental reader, which is also what
+// the thing under test actually faces.
+func (h *boardHarness) watch(
+	t *testing.T, cookie *http.Cookie, p *projectdomain.Project, clientID string,
+) (frames <-chan string, stop func()) {
+	t.Helper()
+
+	server := httptest.NewServer(h.router)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		server.URL+"/projects/"+p.Slug+"/events?client="+url.QueryEscape(clientID), nil)
+	require.NoError(t, err)
+	r.AddCookie(cookie)
+
+	resp, err := server.Client().Do(r)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	out := make(chan string, 16)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer close(out)
+		defer func() { _ = resp.Body.Close() }()
+
+		// Frames are separated by a blank line. Comment lines (the heartbeat) start
+		// with a colon and are skipped.
+		reader := bufio.NewReader(resp.Body)
+		var frame strings.Builder
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				if strings.TrimRight(line, "\r\n") == "" {
+					if f := strings.TrimSpace(frame.String()); f != "" &&
+						!strings.HasPrefix(f, ":") {
+						select {
+						case out <- f:
+						case <-ctx.Done():
+							return
+						}
+					}
+					frame.Reset()
+				} else {
+					frame.WriteString(line)
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// The subscription registers inside the handler, so wait for it before the caller
+	// broadcasts — otherwise the event is sent to an empty room.
+	waitFor(t, func() bool { return h.hub.Subscribers(p.UUID) > 0 })
+
+	return out, func() {
+		cancel()
+		server.Close()
+		<-done
+	}
+}
+
+// waitFor polls a condition, so a test never sleeps a fixed amount and hopes.
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("condition was not met within two seconds")
+}
+
+// nextEvent waits for one frame.
+func nextEvent(t *testing.T, events <-chan string) string {
+	t.Helper()
+	select {
+	case ev, open := <-events:
+		require.True(t, open, "the stream closed before an event arrived")
+		return ev
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event arrived within two seconds")
+		return ""
+	}
+}
+
+func TestAMoveReachesAnotherTab(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Live Board")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+
+	events, stop := h.watch(t, cookie, p, "watching-tab")
+	defer stop()
+
+	// Moved by a different tab, so the watcher is not the originator.
+	r := httptest.NewRequest(http.MethodPost, "/cards/"+cardUUID+"/move",
+		strings.NewReader(url.Values{
+			"to_lane": {lanes[1]}, "to_order": {cardUUID}, "from_lane": {lanes[0]},
+		}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set(middleware.CSRFHeader, csrf)
+	r.Header.Set("X-Client-Id", "moving-tab")
+	r.AddCookie(cookie)
+	require.Equal(t, http.StatusNoContent, h.do(r).Code)
+
+	frame := nextEvent(t, events)
+	assert.Contains(t, frame, "event: lane-updated")
+	assert.Contains(t, frame, "hx-swap-oob",
+		"a card change is broadcast as out-of-band lane fragments")
+	assert.Contains(t, frame, "a card")
+	assert.Contains(t, frame, lanes[0], "the lane it left")
+	assert.Contains(t, frame, lanes[1], "and the lane it went to")
+}
+
+func TestATabNeverReceivesItsOwnChange(t *testing.T) {
+	// Otherwise htmx would swap a card out from under the hand that just dropped it.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Live Board")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+
+	events, stop := h.watch(t, cookie, p, "the-only-tab")
+	defer stop()
+
+	// The same client id the watcher subscribed with.
+	r := httptest.NewRequest(http.MethodPost, "/cards/"+cardUUID+"/move",
+		strings.NewReader(url.Values{
+			"to_lane": {lanes[1]}, "to_order": {cardUUID}, "from_lane": {lanes[0]},
+		}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set(middleware.CSRFHeader, csrf)
+	r.Header.Set("X-Client-Id", "the-only-tab")
+	r.AddCookie(cookie)
+	require.Equal(t, http.StatusNoContent, h.do(r).Code)
+
+	select {
+	case frame, open := <-events:
+		if open && strings.Contains(frame, "lane-updated") {
+			t.Fatalf("the originating tab received its own change: %s", frame)
+		}
+	case <-time.After(250 * time.Millisecond):
+		// Nothing arrived, which is the point.
+	}
+}
+
+func TestAStructuralChangeBroadcastsBoardDirty(t *testing.T) {
+	// A lane arriving out of band cannot *relocate* an element, so an added or
+	// reordered lane cannot be expressed as an out-of-band swap at all. The signal
+	// tells the board to re-fetch itself whole.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Live Board")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	base := "/projects/" + p.Slug
+
+	changes := []struct {
+		name string
+		do   func(t *testing.T)
+	}{
+		{"add a lane", func(t *testing.T) {
+			require.Equal(t, http.StatusSeeOther, h.postForm(base+"/lanes", url.Values{
+				"csrf_token": {csrf}, "name": {"Blocked"}, "color": {"rose"},
+			}, cookie).Code)
+		}},
+		{"rename a lane", func(t *testing.T) {
+			lanes := h.laneUUIDs(t, owner, p)
+			require.Equal(t, http.StatusSeeOther, h.postForm(base+"/lanes/"+lanes[0],
+				url.Values{"csrf_token": {csrf}, "name": {"Renamed"}, "color": {"blue"}},
+				cookie).Code)
+		}},
+		{"reorder lanes", func(t *testing.T) {
+			lanes := h.laneUUIDs(t, owner, p)
+			require.Equal(t, http.StatusSeeOther, h.postForm(
+				base+"/lanes/"+lanes[0]+"/move",
+				url.Values{"csrf_token": {csrf}, "direction": {"down"}}, cookie).Code)
+		}},
+		{"delete a lane", func(t *testing.T) {
+			lanes := h.laneUUIDs(t, owner, p)
+			require.Equal(t, http.StatusSeeOther, h.postForm(
+				base+"/lanes/"+lanes[0]+"/delete",
+				url.Values{"csrf_token": {csrf}, "move_to": {""}}, cookie).Code)
+		}},
+		{"add a label", func(t *testing.T) {
+			require.Equal(t, http.StatusSeeOther, h.postForm(base+"/labels", url.Values{
+				"csrf_token": {csrf}, "name": {"bug"}, "color": {"rose"},
+			}, cookie).Code)
+		}},
+		{"rename the board", func(t *testing.T) {
+			require.Equal(t, http.StatusSeeOther, h.postForm(base+"/settings", url.Values{
+				"csrf_token": {csrf}, "name": {"Renamed Board"},
+			}, cookie).Code)
+		}},
+	}
+
+	for _, c := range changes {
+		t.Run(c.name, func(t *testing.T) {
+			events, stop := h.watch(t, cookie, p, "watching-tab")
+			defer stop()
+
+			c.do(t)
+
+			frame := nextEvent(t, events)
+			assert.Contains(t, frame, "event: board-dirty")
+		})
+	}
+}
+
+func TestClosingATabDropsItsSubscriber(t *testing.T) {
+	// The phase gate: the room count returns to zero. A subscriber that is never
+	// removed costs a goroutine and a channel and shows up nowhere.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Live Board")
+	cookie, _ := h.signIn(t, "owner@example.com")
+
+	require.Zero(t, h.hub.Subscribers(p.UUID))
+
+	_, stopA := h.watch(t, cookie, p, "tab-a")
+	_, stopB := h.watch(t, cookie, p, "tab-b")
+	waitFor(t, func() bool { return h.hub.Subscribers(p.UUID) == 2 })
+
+	stopA()
+	waitFor(t, func() bool { return h.hub.Subscribers(p.UUID) == 1 })
+
+	stopB()
+	waitFor(t, func() bool { return h.hub.Rooms() == 0 })
+	assert.Zero(t, h.hub.Subscribers(p.UUID))
+}
+
+func TestTheStreamRequiresAClientId(t *testing.T) {
+	// Without one there is no way to skip the originating tab, so a move would swap a
+	// card out from under the hand that dropped it.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Live Board")
+	cookie, _ := h.signIn(t, "owner@example.com")
+
+	rec := h.get("/projects/"+p.Slug+"/events", cookie)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Zero(t, h.hub.Subscribers(p.UUID), "and nothing was subscribed")
+}
+
+func TestTheStreamNeedsAccessToTheBoard(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	h.addUser(t, "stranger@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Private Board")
+
+	cookie, _ := h.signIn(t, "stranger@example.com")
+	rec := h.get("/projects/"+p.Slug+"/events?client=tab-a", cookie)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Zero(t, h.hub.Subscribers(p.UUID))
+}
+
+func TestTheBoardCarriesBothDirtyTriggers(t *testing.T) {
+	// The server's signal and the one board.js fires after a reconnect converge on one
+	// re-fetch, rather than two code paths that can drift.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Live Board")
+	cookie, _ := h.signIn(t, "owner@example.com")
+
+	page := body(h.get("/projects/"+p.Slug, cookie))
+
+	assert.Contains(t, page, `hx-trigger="sse:board-dirty, board-dirty"`)
+	assert.Contains(t, page, `hx-get="/projects/`+p.Slug+`/board"`)
+	assert.Contains(t, page, `sse-connect="/projects/`+p.UUID+`/events`)
+}
+
+func TestLiveStatusIsOperatorOnly(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Live Board")
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+
+	t.Run("a member gets 404, not 403", func(t *testing.T) {
+		// A debug surface should not advertise itself.
+		cookie, _ := h.signIn(t, "member@example.com")
+		assert.Equal(t, http.StatusNotFound, h.get("/debug/live", cookie).Code)
+	})
+
+	t.Run("the operator sees the counts", func(t *testing.T) {
+		cookie, _ := h.signIn(t, "owner@example.com")
+
+		empty := body(h.get("/debug/live", cookie))
+		assert.Contains(t, empty, `"rooms":0`)
+		assert.Contains(t, empty, `"total_subscribers":0`)
+
+		_, stop := h.watch(t, cookie, p, "tab-a")
+		defer stop()
+
+		withOne := body(h.get("/debug/live", cookie))
+		assert.Contains(t, withOne, `"rooms":1`)
+		assert.Contains(t, withOne, `"total_subscribers":1`)
+		assert.Contains(t, withOne, p.UUID)
+	})
 }

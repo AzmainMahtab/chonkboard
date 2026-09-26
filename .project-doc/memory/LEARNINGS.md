@@ -437,3 +437,33 @@ useless as the second — there is no modal left to replace it in.
 Every one of these handlers branches on `HX-Request`: fragment, or a redirect to the
 board. Two route tests of mine asserted 200 for a plain post and were simply wrong about
 which branch they were exercising.
+
+## 2026-09-26 — an httptest.ResponseRecorder cannot be used to test a stream
+
+Reading `rec.Body` while the handler still writes to it is a data race. The tests passed
+run alone and failed under `-race` in `make check`, which is exactly the shape of bug
+that gets dismissed as flakiness.
+
+An SSE test needs `httptest.NewServer` and a real incremental reader — which is also
+what the code under test actually faces, so the fix made the test more faithful as well
+as correct.
+
+## 2026-09-26 — a table-driven test over a map is order-dependent if the cases are compared
+
+`TestSignInFailureIsGenericAndSetsNoCookie` collected two responses from a `map`
+range and then compared `messages[0]` against `messages[1]`, normalising each against
+a *different* hard-coded address. Map iteration order is random, so it passed or failed
+by luck — and it had been in the suite since phase 2, passing every run until phase 6
+happened to shuffle it.
+
+Two fixes, both needed: a slice rather than a map when order matters, and normalise each
+response against *its own* input rather than against a positional assumption.
+
+## 2026-09-26 — `htmx.trigger` fires the bare event name, not the `sse:` one
+
+`hx-trigger="sse:board-dirty"` listens for an SSE message. `htmx.trigger(el,
+"board-dirty")` dispatches a plain custom event, which that trigger does not match — so
+a reconnect handler written this way silently does nothing.
+
+List both on the element. Caught by reading the two lines next to each other rather than
+by a test, which is worth noting: nothing in the suite would have failed.

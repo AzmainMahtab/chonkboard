@@ -145,7 +145,17 @@ under "Traps", and you should read that section in full at least once.
     `Content-Disposition: attachment` and `nosniff` regardless.
 36. **The card form submits every field every time.** There is no partial update,
     because an absent field and a cleared field would be indistinguishable.
-37. **`web/` must never import a `*/domain` package.** The CSRF token reaches a
+37. **A card change broadcasts lane fragments; a structural change broadcasts
+    `board-dirty`.** Not a trade-off — an out-of-band swap cannot relocate an element,
+    so an added or reordered lane has no fragment that expresses it.
+38. **`lane-updated` carries `ExceptClient`; `board-dirty` does not.** The first would
+    otherwise swap a card out from under the hand that dropped it; the second comes from
+    a form post, and other tabs of the same person still need it.
+39. **A reconnect re-fetches the whole board.** Nothing replays events missed while
+    disconnected, so merely resuming the stream leaves it quietly stale.
+40. **Never test a stream with an `httptest.ResponseRecorder`** — reading its Body while
+    the handler writes is a data race. Use `httptest.NewServer`.
+41. **`web/` must never import a `*/domain` package.** The CSRF token reaches a
     fragment through `view.CSRF`, not `authctx`, for exactly this reason. There is
     no gate enforcing it, so check with
     `go list -deps ./web/... | grep internal/.*/domain`.

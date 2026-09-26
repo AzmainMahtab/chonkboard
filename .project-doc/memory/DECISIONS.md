@@ -628,3 +628,60 @@ A filename is the one piece of user input that reaches a response header. A quot
 the quoted string early; a CR or LF ends the header and starts another. Both are header
 injection. The `filename*` form carries the real name for a browser that understands it,
 while the quoted form stays a safe fallback for one that does not.
+
+## 2026-09-26 — a structural change broadcasts a signal, not a fragment
+
+`sse.Event{Name: "board-dirty"}` with no payload; the client re-fetches the whole
+board.
+
+Not an optimisation trade-off — an out-of-band swap **cannot relocate an element**. A
+lane that was added, or reordered, or deleted, has no existing element to replace, so
+there is no fragment that expresses the change. A whole-board re-fetch is the only
+correct answer, and it is rare enough that making the common case surgical and this
+case whole is the right split.
+
+No `ExceptClient` on it. A structural change arrives from a full-page form post, not a
+fetch carrying `X-Client-Id`, and the acting tab has been redirected to the settings
+page anyway — while any *other* tab that person has open on the board needs the signal
+as much as anybody else's.
+
+Renaming a project counts: its name is in the board header.
+
+## 2026-09-26 — the board listens for two triggers that mean the same thing
+
+`hx-trigger="sse:board-dirty, board-dirty"` on one element with one `hx-get`.
+
+`sse:board-dirty` is the server's signal. The bare `board-dirty` is what `board.js`
+fires after a reconnect. Two names, one element, one re-fetch — rather than a second
+code path that can drift from the first. `htmx.trigger` fires the plain event, which is
+why both are needed.
+
+## 2026-09-26 — the client re-fetches the whole board on reconnect
+
+`htmx:sseOpen`, skipping the first open.
+
+EventSource retries on its own, but events sent while it was disconnected are simply
+gone: nothing replays them. A board that merely resumed listening would sit quietly
+stale, which is worse than visibly broken because nobody notices. The first open is
+skipped because the page was just rendered from the database — there is no gap to close,
+and fetching there would double every page load.
+
+Two flags rather than one: `streamUp` (is it up now) and `awaitingFirstOpen` (was this
+the initial connection). Named `streamUp` rather than `live` because two functions in the
+same file take a local `live` for the `#live` element, and a shadowed flag is a bug
+waiting for the next edit.
+
+## 2026-09-26 — subscriber counts are an operator-only route, not on /healthz
+
+`GET /debug/live`, refusing a non-operator with **404** rather than 403.
+
+A leak in the hub is otherwise invisible: a subscriber that was never removed costs one
+goroutine and one buffered channel, appears nowhere, and only becomes obvious once there
+are thousands. Making the number queryable is the whole point.
+
+Not on `/healthz`, because room counts say how many projects are in use and how many
+people are watching them — not something to publish unauthenticated. 404 rather than 403
+because a debug surface should not advertise itself.
+
+`Hub.RoomCounts` returns a snapshot built under the read lock, so a caller cannot hold
+the lock while it renders.
