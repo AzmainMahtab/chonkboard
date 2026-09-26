@@ -38,7 +38,7 @@ templ lane(b view.Board, l view.Lane, oob templ.Attributes) {
 			@LaneCount(l)
 			if b.CanManage {
 				<a
-					href={ templ.SafeURL("/projects/" + b.ProjectSlug + "/lanes/" + l.UUID + "/edit") }
+					href={ templ.SafeURL("/projects/" + b.ProjectSlug + "/lanes/" + l.UUID + "/edit?from=board") }
 					class="rounded-card px-1 text-ink-3 hover:bg-surface-3 hover:text-ink"
 					aria-label={ "Lane settings for " + l.Name }
 					title="Lane settings"

@@ -19,6 +19,7 @@ templ LaneSettings(projectSlug string, f view.LaneForm) {
 		hx-boost="false"
 	>
 		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		<input type="hidden" name="return_to" value={ f.ReturnTo }/>
 		if f.Error != "" {
 			<div role="alert" class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm">
 				{ f.Error }
@@ -96,7 +97,7 @@ templ LaneSettings(projectSlug string, f view.LaneForm) {
 					Save lane
 				}
 			</button>
-			<a href={ settingsURL(projectSlug) } class="btn-quiet">Cancel</a>
+			<a href={ returnURL(projectSlug, f.ReturnTo) } class="btn-quiet">Cancel</a>
 		</div>
 	</form>
 }
@@ -196,13 +197,16 @@ templ laneDeleteButton(projectSlug string, l view.Lane) {
 }
 
 // LaneDeleteForm asks where a lane's cards should go before removing it.
-templ LaneDeleteForm(projectSlug string, lane view.Lane, others []view.Lane, errMessage string) {
+templ LaneDeleteForm(
+	projectSlug string, lane view.Lane, others []view.Lane, errMessage, returnTo string,
+) {
 	<form
 		method="post"
 		action={ templ.SafeURL("/projects/" + projectSlug + "/lanes/" + lane.UUID + "/delete") }
 		class="flex flex-col gap-4"
 	>
 		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		<input type="hidden" name="return_to" value={ returnTo }/>
 		if errMessage != "" {
 			<div role="alert" class="rounded-card border border-danger/35 bg-danger/10 px-3 py-2 text-sm">
 				{ errMessage }
@@ -231,7 +235,7 @@ templ LaneDeleteForm(projectSlug string, lane view.Lane, others []view.Lane, err
 		}
 		<div class="flex items-center gap-2">
 			<button type="submit" class="btn-danger">Delete lane</button>
-			<a href={ settingsURL(projectSlug) } class="btn-quiet">Cancel</a>
+			<a href={ returnURL(projectSlug, returnTo) } class="btn-quiet">Cancel</a>
 		</div>
 	</form>
 }

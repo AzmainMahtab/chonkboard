@@ -49,6 +49,18 @@ func pluralise(n int, one, many string) string {
 	return many
 }
 
+// returnURL resolves where a lane form's Save and Cancel should go.
+//
+// The path is built here from a known token rather than taken from the request: a form
+// field holding a URL is an open redirect waiting to be found. Anything but "board" means
+// the settings page, so an unrecognised value fails safe.
+func returnURL(projectSlug, returnTo string) templ.SafeURL {
+	if returnTo == "board" {
+		return templ.SafeURL("/projects/" + projectSlug)
+	}
+	return settingsURL(projectSlug)
+}
+
 // settingsURL is a project's settings page.
 func settingsURL(projectSlug string) templ.SafeURL {
 	return templ.SafeURL("/projects/" + projectSlug + "/settings")

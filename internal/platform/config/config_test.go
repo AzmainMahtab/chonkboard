@@ -6,6 +6,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -108,4 +111,76 @@ func TestDurationsThatDoNotParseAreRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, `unknown unit "d"`)
 	assert.ErrorContains(t, err, "SessionTTL")
+}
+
+// TestValuesWithSurroundingWhitespaceParse is a regression guard.
+//
+// `make run` failed on a `.env` copied straight from `.env.example`, because that file
+// used inline comments and Make's `-include` strips the `#` but leaves the whitespace
+// before it: `SESSION_COOKIE_SECURE=false   # …` arrived as "false   ". Three variables
+// would have failed in sequence — two on type conversion, then APP_ENV on validation.
+//
+// The file no longer uses inline comments, but nothing stops somebody leaving a trailing
+// space, and the error it produces names the *type* rather than the whitespace.
+func TestValuesWithSurroundingWhitespaceParse(t *testing.T) {
+	t.Setenv("APP_ENV", "production   ")
+	t.Setenv("APP_ADDR", "  :9090  ")
+	t.Setenv("LOG_LEVEL", "warn\t")
+	t.Setenv("SESSION_COOKIE_SECURE", "true   ")
+	t.Setenv("UPLOAD_MAX_BYTES", "10485760     ")
+	t.Setenv("SESSION_TTL", " 24h ")
+	t.Setenv("SUPER_ADMIN_EMAIL", "  owner@example.com  ")
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, EnvProduction, cfg.Env)
+	assert.Equal(t, ":9090", cfg.Addr)
+	assert.Equal(t, "warn", cfg.LogLevel)
+	assert.True(t, cfg.SessionCookieSecure)
+	assert.Equal(t, int64(10485760), cfg.UploadMaxBytes)
+	assert.Equal(t, 24*time.Hour, cfg.SessionTTL)
+	assert.Equal(t, "owner@example.com", cfg.SuperAdminEmail)
+}
+
+func TestAWhitespaceOnlyValueIsRejectedRatherThanDefaulted(t *testing.T) {
+	// Trimming must not reach the point of emptying a value. `DB_PATH=" "` is somebody's
+	// mistake; trimming it to "" makes env fall back to the default and quietly puts the
+	// database somewhere they never chose. Left alone, validation rejects it and says
+	// which variable is wrong.
+	t.Setenv("DB_PATH", "   ")
+
+	_, err := Load()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DB_PATH")
+}
+
+// TestEnvExampleIsPortable checks the committed template itself.
+//
+// It is read by Make, by `docker --env-file`, by direnv and by hand, and those disagree
+// about inline comments — so the file must not use any. A test rather than a convention,
+// because the failure it causes points at a type conversion and not at the file.
+func TestEnvExampleIsPortable(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", ".env.example"))
+	require.NoError(t, err, ".env.example must exist: the README tells people to copy it")
+
+	for i, line := range strings.Split(string(source), "\n") {
+		number := i + 1
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		key, value, found := strings.Cut(line, "=")
+		require.True(t, found, "line %d is neither a comment nor an assignment: %q", number, line)
+
+		assert.NotContains(t, value, "#",
+			"line %d has an inline comment. Make strips the # but keeps the whitespace "+
+				"before it, and docker --env-file keeps the whole thing:\n  %s", number, line)
+		assert.Equal(t, strings.TrimRight(line, " \t"), line,
+			"line %d has trailing whitespace, which becomes part of the value", number)
+		assert.Equal(t, strings.TrimSpace(key), key,
+			"line %d has whitespace around the key", number)
+	}
 }

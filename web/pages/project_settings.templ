@@ -188,14 +188,14 @@ templ LanePage(p view.Page, projectSlug, projectName string, f view.LaneForm) {
 // LaneDeletePage asks where a lane's cards should go.
 templ LaneDeletePage(
 	p view.Page, projectSlug, projectName string,
-	lane view.Lane, others []view.Lane, errMessage string,
+	lane view.Lane, others []view.Lane, errMessage, returnTo string,
 ) {
 	@layouts.App(p) {
 		<div class="mx-auto w-full max-w-md px-4 py-10">
 			@lanePageNav(projectSlug, projectName)
 			<h1 class="text-xl font-semibold tracking-tight">Delete lane</h1>
 			<div class="mt-6">
-				@components.LaneDeleteForm(projectSlug, lane, others, errMessage)
+				@components.LaneDeleteForm(projectSlug, lane, others, errMessage, returnTo)
 			</div>
 		</div>
 	}

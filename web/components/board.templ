@@ -34,7 +34,7 @@ templ Board(b view.Board) {
 // reusable in a modal later without changing the route.
 templ addLane(b view.Board) {
 	<a
-		href={ templ.SafeURL("/projects/" + b.ProjectSlug + "/lanes/new") }
+		href={ templ.SafeURL("/projects/" + b.ProjectSlug + "/lanes/new?from=board") }
 		class="w-[17rem] shrink-0 rounded-lane border border-dashed border-line-strong px-3 py-2.5 text-left text-xs text-ink-3 hover:border-accent hover:text-ink-2"
 	>+ Add a lane</a>
 }
