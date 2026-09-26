@@ -8,6 +8,8 @@ package config
 import (
 	"fmt"
 	"net/mail"
+	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -61,6 +63,8 @@ type Config struct {
 
 // Load reads and validates the environment.
 func Load() (Config, error) {
+	trimEnv[Config]()
+
 	var cfg Config
 	if err := env.Parse(&cfg); err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
@@ -69,6 +73,49 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// trimEnv strips surrounding whitespace from every variable this config reads.
+//
+// It exists because a trailing space is invisible and arrives by accident. The Makefile
+// loads .env with `-include`, and Make strips a `#` comment from a line but leaves the
+// whitespace that was in front of it — so
+//
+//	UPLOAD_MAX_BYTES=10485760     # 10 MiB per file
+//
+// becomes "10485760     " and fails to parse as an int64. `docker --env-file` is worse: it
+// keeps the comment too. The .env.example in this repo no longer uses inline comments for
+// exactly that reason, but nothing stops somebody leaving a trailing space, and the error
+// it produces points at the type rather than at the whitespace.
+//
+// The key list comes from the struct's own `env` tags, so it cannot drift from the fields.
+func trimEnv[T any]() {
+	var zero T
+	t := reflect.TypeOf(zero)
+	if t == nil || t.Kind() != reflect.Struct {
+		return
+	}
+
+	for i := range t.NumField() {
+		key := t.Field(i).Tag.Get("env")
+		if key == "" {
+			continue
+		}
+		value, ok := os.LookupEnv(key)
+		if !ok {
+			continue
+		}
+
+		// Only trim when something is left. A whitespace-only value is a mistake, and
+		// trimming it to "" makes env fall back to the envDefault — so a stray space
+		// in DB_PATH would silently put the database somewhere the operator never
+		// chose. Left as it is, validation rejects it and says so.
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || trimmed == value {
+			continue
+		}
+		_ = os.Setenv(key, trimmed)
+	}
 }
 
 // validate rejects a configuration that would fail later and less clearly. It is

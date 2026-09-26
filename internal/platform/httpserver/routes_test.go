@@ -488,7 +488,11 @@ func TestChangingThePasswordLiftsTheGate(t *testing.T) {
 		"current_password": {testPassword},
 		"new_password":     {"a replacement password"},
 	}, cookie)
-	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Somebody who was held here is let through rather than left looking at the form,
+	// which reads as though nothing happened.
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Equal(t, "/", rec.Header().Get("Location"))
 
 	assert.Equal(t, http.StatusOK, h.get("/", cookie).Code,
 		"the application is reachable now")
@@ -2519,11 +2523,14 @@ func TestTheOwnerFlowEndToEnd(t *testing.T) {
 	})
 
 	memberCSRF := h.csrfFor(t, memberCookie)
-	require.Equal(t, http.StatusOK, h.postForm(auth.PasswordPath, url.Values{
+	changed := h.postForm(auth.PasswordPath, url.Values{
 		"csrf_token":       {memberCSRF},
 		"current_password": {firstPassword},
 		"new_password":     {"their own password"},
-	}, memberCookie).Code)
+	}, memberCookie)
+	// Let straight through, because they were held here rather than choosing to come.
+	require.Equal(t, http.StatusSeeOther, changed.Code)
+	require.Equal(t, "/", changed.Header().Get("Location"))
 	require.Equal(t, http.StatusOK, h.get("/projects/"+p.Slug, memberCookie).Code)
 
 	// --- reset ---
@@ -2558,7 +2565,7 @@ func TestTheOwnerFlowEndToEnd(t *testing.T) {
 	// Sign in properly again, so there is a live session to suspend.
 	memberCookie, _ = h.signInWith(t, "member@example.com", secondPassword)
 	memberCSRF = h.csrfFor(t, memberCookie)
-	require.Equal(t, http.StatusOK, h.postForm(auth.PasswordPath, url.Values{
+	require.Equal(t, http.StatusSeeOther, h.postForm(auth.PasswordPath, url.Values{
 		"csrf_token":       {memberCSRF},
 		"current_password": {secondPassword},
 		"new_password":     {"a third password"},
@@ -2980,5 +2987,70 @@ func TestDelegatedBehavioursAreDeclaredWhereTheyAreNeeded(t *testing.T) {
 		assert.Contains(t, page, "data-autosubmit")
 		assert.Contains(t, page, "<noscript>",
 			"and there is a button for when the script has not loaded")
+	})
+}
+
+// TestChangingAPasswordGoesWhereTheReasonWas distinguishes the two ways somebody reaches
+// the password page, which want different answers.
+//
+// The original handler always rendered a confirmation. For somebody who chose to visit
+// /account that is right — they should see that it worked. For somebody the gate *sent*
+// there it is wrong: they have done the one thing it was waiting for, and being left
+// looking at the same form reads as though nothing happened. That was a real report.
+func TestChangingAPasswordGoesWhereTheReasonWas(t *testing.T) {
+	t.Run("held there by the gate: let through to the application", func(t *testing.T) {
+		h := newBoardHarness(t)
+		user := h.addUser(t, "held@example.com", authdomain.RoleMember)
+		user.MustChangePassword = true
+		require.NoError(t, h.store.UpdateUser(h.ctx, user))
+
+		cookie, csrf := h.signIn(t, "held@example.com")
+
+		rec := h.postForm(auth.PasswordPath, url.Values{
+			"csrf_token":       {csrf},
+			"current_password": {testPassword},
+			"new_password":     {"a brand new password"},
+		}, cookie)
+
+		require.Equal(t, http.StatusSeeOther, rec.Code)
+		assert.Equal(t, "/", rec.Header().Get("Location"))
+		assert.Equal(t, http.StatusOK, h.get("/", cookie).Code,
+			"and the gate is lifted")
+	})
+
+	t.Run("there by choice: stays, and sees that it worked", func(t *testing.T) {
+		h := newBoardHarness(t)
+		h.addUser(t, "willing@example.com", authdomain.RoleMember)
+		cookie, csrf := h.signIn(t, "willing@example.com")
+
+		rec := h.postForm(auth.PasswordPath, url.Values{
+			"csrf_token":       {csrf},
+			"current_password": {testPassword},
+			"new_password":     {"a brand new password"},
+		}, cookie)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, body(rec), "Password changed")
+		assert.NotContains(t, body(rec), "Choose your own password",
+			"the forced-change banner is gone")
+	})
+
+	t.Run("a rejected change keeps the banner while still held", func(t *testing.T) {
+		h := newBoardHarness(t)
+		user := h.addUser(t, "held@example.com", authdomain.RoleMember)
+		user.MustChangePassword = true
+		require.NoError(t, h.store.UpdateUser(h.ctx, user))
+
+		cookie, csrf := h.signIn(t, "held@example.com")
+
+		rec := h.postForm(auth.PasswordPath, url.Values{
+			"csrf_token":       {csrf},
+			"current_password": {"not the right one"},
+			"new_password":     {"a brand new password"},
+		}, cookie)
+
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Contains(t, body(rec), "Choose your own password",
+			"they are still held, so the banner stays")
 	})
 }

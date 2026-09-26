@@ -153,9 +153,14 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	user := authctx.User(r.Context())
 	session := authctx.Session(r.Context())
 
+	// Captured before the service runs: ChangeOwnPassword mutates the user in place,
+	// so by the time it returns this is already false and there is no way to tell
+	// whether the person came here by choice or was sent here by the gate.
+	wasHeld := user.MustChangePassword
+
 	if err := r.ParseForm(); err != nil {
 		h.renderAccount(w, r, http.StatusBadRequest, view.PasswordForm{
-			MustChange: user.MustChangePassword,
+			MustChange: wasHeld,
 			Error:      "That form could not be read.",
 		})
 		return
@@ -169,13 +174,21 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		h.renderAccount(w, r, apperrors.From(err).Status(),
-			passwordFormFor(user.MustChangePassword, err))
+			passwordFormFor(wasHeld, err))
 		return
 	}
 
-	// Rendered rather than redirected, so the confirmation is visible. The user
-	// object was mutated by the service, so MustChangePassword is already false
-	// and the warning banner disappears on this same response.
+	// Somebody who was *held* here is let through: RequirePasswordChange put them on
+	// this page and they have now done the one thing it was waiting for, so leaving
+	// them looking at the form reads as though it did not work.
+	if wasHeld {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	// Somebody who came here by choice stays, and sees that it worked. Rendered
+	// rather than redirected so the confirmation survives; the user object was
+	// mutated by the service, so the forced-change banner is already gone.
 	h.renderAccount(w, r, http.StatusOK, view.PasswordForm{Done: true})
 }
 
