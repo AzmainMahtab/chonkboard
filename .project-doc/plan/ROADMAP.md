@@ -17,8 +17,8 @@ nothing to broadcast until something can change.
 | 2 | Auth and sessions | **done** (2026-09-26) |
 | 3 | Projects, lanes, membership | **done** (2026-09-26) |
 | 4 | Cards core | **done** (2026-09-26) |
-| 5 | Rich card | next |
-| 6 | Live board | not started |
+| 5 | Rich card | **done** (2026-09-26) |
+| 6 | Live board | next |
 | 7 | Admin console | not started |
 | 8 | Harden and ship | not started |
 
@@ -385,32 +385,68 @@ date set elsewhere.
 
 ---
 
-## Phase 5 — Rich card
+## Phase 5 — Rich card · done
 
-**Why here.** The card is the thing people live in. Everything here is additive
-to a working board, which is why it comes after one exists.
+**Why here.** The card is the thing people live in. Everything here is additive to a
+working board, which is why it came after one existed.
 
-**Build**
+**Delivered**
 
-- Labels: project-scoped, named, one of seven palette colours; attach and detach
-  on a card. Manager-and-above may define them; anyone may attach them.
-- Due date with the three-state treatment already in the card component
-  (overdue / due within 48h / later), priority, assignee.
-- Markdown description. **Render server-side and sanitise** — a card body is
-  user input and the CSP does not save you from injected markup.
-- Comments: add, soft-delete; author or manager may delete.
-- Attachments: multipart upload, size and MIME limited, stored under a generated
-  `stored_name` (never the user's filename), served with
-  `Content-Disposition: attachment` and `nosniff`, **authorised per request
-  against the card's project** so a leaked URL is not a leaked file.
-- `web/components/card_modal.templ`, `card_form.templ`, `comment.templ`,
-  `attachment.templ` — and the **"Move to lane…" control** that is the keyboard
-  path for a drag.
+- `internal/shared/markdown` — goldmark (GFM, **no `WithUnsafe`**) then bluemonday's
+  `UGCPolicy`. Raw HTML in a body is escaped before the sanitiser sees it
+- `internal/platform/filestore` — attachment bytes on disk under a generated 32-hex
+  name, fanned out by first byte, with `pathFor` refusing anything that is not a name
+  this package produced
+- `internal/card/comments.go` — the comment model, its queries and its rules, with a
+  soft delete that leaves a tombstone
+- `internal/card/attachments.go` — upload, serve, delete, a MIME allowlist, and the
+  per-request authorisation that makes a leaked URL harmless
+- `internal/card/service.go` — `EditInput` grown to every rich field, the assignee
+  membership check, and `MoveToLane` (the keyboard path, going through the same `Move`)
+- `internal/project/service.go` — `CanSee` and `People`, so the card slice can ask who
+  may be assigned work
+- `internal/platform/middleware/bodylimit.go` — one global request ceiling, applied
+  before anything parses a body
+- `web/components/{card_modal,card_form,comment,attachment,label,modal}.templ` and the
+  `prose-card` rules that style exactly the tag set the sanitiser permits
 
-**Gate.** Every field round-trips. An oversized upload is refused with a readable
-message. An attachment URL fetched by a user without access to that project
-returns 404, not 403 (do not confirm the file exists). Markdown containing a
-`<script>` renders inert. The card modal traps focus and restores it on close.
+**Gate — met.** `make check` and `make check-postgres` both green. Walked over HTTP:
+
+| Check | Result |
+|---|---|
+| A card with priority, due date, assignee, description and two labels | every field round-trips, in the database, on the modal, on the board and back into the edit form |
+| Clearing every optional field | assignee and due date become NULL, labels emptied |
+| An assignee with no grant on the board | 400 with a field error |
+| A label from another board | 404 |
+| **Markdown containing `<script>`, `onerror`, `javascript:`, `<iframe>`, `<form>`, `<svg onload>`** | **all inert; the only forms on the page are the application's own** |
+| The same, in a comment | inert |
+| A comment, then a soft delete | the row stays, renders as "removed a comment", stops counting on the badge |
+| An empty comment | 400 |
+| A member deleting somebody else's comment | 403 |
+| **A permitted upload** | stored under a generated hex name, never the uploader's |
+| **A 200KB file against a 64KB ceiling** | **413, "too large"** — no row, no orphan on disk |
+| A shell script, HTML, an SVG | 400, "cannot be attached" |
+| A filename with a path | reduced to its base |
+| Download | `Content-Disposition: attachment`, `nosniff`, bytes match |
+| **A leaked attachment URL, fetched by somebody with no access** | **404 — and byte-identical to the response for a made-up id** |
+| A member deleting somebody else's attachment | 403 |
+| Delete an attachment | row and bytes both gone |
+| The "Move to lane…" control | offered, excluding the lane the card is in |
+| A move through it, into a full lane | 409, "already at its limit" — the same rules as a drag |
+| Label create, rename, delete by a manager | works; a duplicate name is 409 |
+| The same by a member | 403 — but attaching an existing label is allowed |
+| Deleting a label | removed from every card that carried it |
+| Positions after all of it | dense in every lane |
+
+**One defect, and it was total.** `r.ParseForm` reads only URL-encoded bodies, so the
+CSRF check found no token in a multipart request and **every upload returned 403**.
+Invisible to a JavaScript client sending the token as a header, and invisible to a test
+that posts a URL-encoded form and calls it an upload. Fixing it required a global body
+ceiling first, because parsing a multipart body spools it to disk — so
+`middleware.LimitBody`, planned for phase 8, landed here.
+
+**Not verified.** The modal's focus trap is `x-trap.noscroll` from Alpine and cannot be
+exercised without a browser. It is part of the outstanding browser check.
 
 ---
 

@@ -178,12 +178,18 @@ type ProjectSettings struct {
 	// CanDelete and CanArchive are the operator only.
 	CanArchive bool
 	CanDelete  bool
-	Form       ProjectForm
+	// LabelForm is the create-or-edit form for a project label.
+	LabelForm LabelForm
+	Form      ProjectForm
 	// Saved shows a confirmation after a successful save.
 	Saved string
 }
 
 // CardForm is the create/edit form's state across a failed submission.
+//
+// Every field is submitted every time, so there is no "leave unchanged" case: an
+// absent field and a cleared field would otherwise be indistinguishable, and clearing
+// a due date would be impossible.
 type CardForm struct {
 	// UUID is empty when the form creates a card.
 	UUID        string
@@ -191,9 +197,41 @@ type CardForm struct {
 	LaneName    string
 	Title       string
 	Description string
-	Error       string
-	TitleError  string
-	DescError   string
+
+	Priority string
+	// Assignee is a user uuid, or "" for nobody.
+	Assignee string
+	// DueAt is the raw yyyy-mm-dd field value, or "" for no due date.
+	DueAt string
+	// LabelUUIDs is which labels are ticked.
+	LabelUUIDs []string
+
+	// Priorities, People and Labels are the choices the form offers.
+	Priorities []Choice
+	People     []Candidate
+	Labels     []Label
+
+	Error         string
+	TitleError    string
+	DescError     string
+	DueError      string
+	AssigneeError string
+}
+
+// Choice is one option in a select.
+type Choice struct {
+	Value string
+	Label string
+}
+
+// HasLabel reports whether a label is ticked, for rendering the checkbox.
+func (f CardForm) HasLabel(uuid string) bool {
+	for _, u := range f.LabelUUIDs {
+		if u == uuid {
+			return true
+		}
+	}
+	return false
 }
 
 // IsNew reports whether this form creates a card rather than editing one.
@@ -214,13 +252,67 @@ type ActivityEntry struct {
 type CardDetail struct {
 	Card     Card
 	LaneName string
-	// Description is the raw markdown for now; phase 5 renders it.
-	Description string
-	CreatedBy   string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	IsArchived  bool
+	// DescriptionHTML is the description already rendered from markdown and
+	// sanitised. It is trusted markup by the time it reaches a component, which is
+	// why the field name says so — the sanitising happens in the handler, not here.
+	DescriptionHTML string
+	// HasDescription distinguishes an empty body from one that sanitised to nothing.
+	HasDescription bool
+	CreatedBy      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	IsArchived     bool
 	// CanDelete is false for a member looking at somebody else's card.
 	CanDelete bool
 	History   []ActivityEntry
+
+	Comments    []Comment
+	Attachments []Attachment
+	// MoveTo is the other lanes on this board, for the keyboard move control.
+	MoveTo []Choice
+	// Priority is the human label for the card's priority, or "" for none.
+	Priority string
 }
+
+// Comment is one entry in a card's discussion.
+type Comment struct {
+	UUID   string
+	Author string
+	// BodyHTML is rendered and sanitised, like a description.
+	BodyHTML  string
+	CreatedAt time.Time
+	// IsDeleted marks a tombstone: the row stays so a thread does not silently lose
+	// its shape and replies above it stop making sense.
+	IsDeleted bool
+	CanDelete bool
+}
+
+// Attachment is one file on a card.
+type Attachment struct {
+	UUID string
+	// Filename is what the uploader called it. Never a path, and never what the
+	// bytes are stored under.
+	Filename   string
+	SizeHuman  string
+	MIMEType   string
+	UploadedBy string
+	CreatedAt  time.Time
+	CanDelete  bool
+	// IsImage decides whether the panel shows a thumbnail.
+	IsImage bool
+}
+
+// LabelForm is the project-label form's state.
+type LabelForm struct {
+	// UUID is empty when the form creates a label.
+	UUID   string
+	Name   string
+	Colour string
+	// Colours is the palette.
+	Colours   []string
+	Error     string
+	NameError string
+}
+
+// IsNew reports whether this form creates a label rather than editing one.
+func (f LabelForm) IsNew() bool { return f.UUID == "" }

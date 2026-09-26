@@ -56,6 +56,63 @@ templ CardForm(projectSlug string, f view.CardForm) {
 					<p id="card-description-error" class="mt-1 text-xs text-danger">{ f.DescError }</p>
 				}
 			</div>
+			<div class="grid gap-4 sm:grid-cols-2">
+				<div>
+					<label for="card-priority" class="form-label">Priority</label>
+					<select id="card-priority" name="priority" class="field">
+						for _, p := range f.Priorities {
+							<option value={ p.Value } selected?={ p.Value == f.Priority }>{ p.Label }</option>
+						}
+					</select>
+				</div>
+				<div>
+					<label for="card-due" class="form-label">
+						Due <span class="font-normal text-ink-3">optional</span>
+					</label>
+					<input
+						id="card-due"
+						name="due_at"
+						type="date"
+						class="field"
+						value={ f.DueAt }
+						{ fieldState("card-due", f.DueError)... }
+					/>
+					if f.DueError != "" {
+						<p id="card-due-error" class="mt-1 text-xs text-danger">{ f.DueError }</p>
+					}
+				</div>
+			</div>
+			<div>
+				<label for="card-assignee" class="form-label">
+					Assignee <span class="font-normal text-ink-3">optional</span>
+				</label>
+				<select
+					id="card-assignee"
+					name="assignee"
+					class="field"
+					{ fieldState("card-assignee", f.AssigneeError)... }
+				>
+					<option value="">Nobody</option>
+					for _, person := range f.People {
+						<option value={ person.UUID } selected?={ person.UUID == f.Assignee }>
+							{ person.DisplayName }
+						</option>
+					}
+				</select>
+				if f.AssigneeError != "" {
+					<p id="card-assignee-error" class="mt-1 text-xs text-danger">{ f.AssigneeError }</p>
+				}
+			</div>
+			if len(f.Labels) > 0 {
+				<fieldset>
+					<legend class="form-label">Labels</legend>
+					<div class="flex flex-wrap gap-1.5">
+						for _, l := range f.Labels {
+							@labelCheckbox(l, f.HasLabel(l.UUID))
+						}
+					</div>
+				</fieldset>
+			}
 			<div class="flex items-center gap-2">
 				<button type="submit" class="btn-primary">
 					if f.IsNew() {
@@ -72,4 +129,28 @@ templ CardForm(projectSlug string, f view.CardForm) {
 			</div>
 		</form>
 	}
+}
+
+// labelCheckbox is one label, drawn as its own chip.
+//
+// A real checkbox, visually hidden rather than replaced, so it is keyboard reachable
+// and announced as a checkbox.
+templ labelCheckbox(l view.Label, ticked bool) {
+	<label class="cursor-pointer">
+		<input
+			type="checkbox"
+			name="labels"
+			value={ l.UUID }
+			class="peer sr-only"
+			checked?={ ticked }
+		/>
+		<span
+			class={
+				"block rounded-pill px-2 py-0.5 text-2xs font-medium ring-offset-2 ring-offset-surface",
+				"opacity-45 peer-checked:opacity-100",
+				"peer-focus-visible:ring-2 peer-focus-visible:ring-accent peer-checked:ring-1 peer-checked:ring-ink/20",
+				labelTint(l.Color),
+			}
+		>{ l.Name }</span>
+	</label>
 }

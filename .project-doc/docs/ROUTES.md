@@ -90,17 +90,36 @@ Archive and delete answer an HTMX request with the lane fragment and an
 `HX-Trigger: card-gone`, and a plain form post with a redirect to the board — there is
 nothing for a fragment to replace when the modal that held the button is gone.
 
-## Rich card — *phase 5*
+## Rich card — **built**
 
 | Method | Path | Returns | Notes |
 |---|---|---|---|
-| POST | `/cards/{c}/comments` | fragment | |
-| POST | `/comments/{x}/delete` | fragment | own comment only, for a member |
-| POST | `/cards/{c}/attachments` | fragment | multipart; size and MIME limited |
-| GET | `/attachments/{x}` | file | streamed; authorised per request; 404 when not permitted |
-| POST | `/attachments/{x}/delete` | fragment | own attachment only, for a member |
-| POST | `/cards/{c}/labels/{l}` | fragment | attach |
-| POST | `/cards/{c}/labels/{l}/remove` | fragment | detach |
+| POST | `/cards/{c}/move-to` | 303 or fragment | the keyboard path for a drag; the server derives both lane orders |
+| POST | `/cards/{c}/comments` | 303 or fragment | markdown, rendered and sanitised on render |
+| POST | `/comments/{x}/delete` | 303 or fragment | soft delete; **own comment only, for a member** |
+| POST | `/cards/{c}/attachments` | 303 or fragment | multipart; size and MIME limited |
+| GET | `/attachments/{x}` | file | **authorised per request; 404 when not permitted** |
+| POST | `/attachments/{x}/delete` | 303 or fragment | **own attachment only, for a member** |
+
+Labels are attached by submitting the card form — there is no separate attach endpoint,
+because a label is one of the fields the form already writes in a single transaction.
+
+**`GET /attachments/{x}` never returns 403.** A 403 would confirm the file exists, and
+the URL carries no project to make that harmless. The route test asserts the response to
+a leaked URL is byte-identical to the response for a made-up id.
+
+Every response carries `Content-Disposition: attachment` and `X-Content-Type-Options:
+nosniff`, so even a file whose declared type is wrong cannot execute in this origin. The
+filename in the header is ASCII-sanitised and repeated as `filename*=UTF-8''…`.
+
+## Project label management — **built**
+
+| Method | Path | Returns | Notes |
+|---|---|---|---|
+| POST | `/projects/{p}/labels` | 303 | manager or above |
+| GET | `/projects/{p}/labels/{l}/edit` | page | the settings page with the form filled in |
+| POST | `/projects/{p}/labels/{l}` | 303 | |
+| POST | `/projects/{p}/labels/{l}/delete` | 303 | assignments to cards cascade |
 
 ## Project manager or above — **built**
 
@@ -222,7 +241,7 @@ actually says rather than to a guessed undo.
 Global, on every request:
 
 ```
-RealIP → RequestID → RequestLogger → Recoverer → SecurityHeaders
+RealIP → RequestID → RequestLogger → Recoverer → SecurityHeaders → LimitBody
 ```
 
 `RealIP` is first so the rate limiter and the logs see the actual client rather than
@@ -244,6 +263,12 @@ authenticated   + RequireSession → VerifyCSRF
 the session. `RequirePasswordChange` last, so a user being held still has a session
 and a CSRF token and can actually submit the form.
 
-**Not yet applied:** `RequestSize` and `Timeout` (exempting the SSE route) land in
-phase 8 with the rest of the hardening.
+`LimitBody` runs globally, immediately after the security headers and **before anything
+parses a body**. That ordering is load-bearing: the CSRF check has to read a multipart
+form to find its token, and parsing one spools it to disk — so the ceiling has to exist
+by then or an unbounded upload is written before anything can refuse it. It is set to
+`UPLOAD_MAX_BYTES` plus a megabyte of envelope slack, and skips GET and HEAD so the SSE
+stream is untouched.
+
+**Not yet applied:** `Timeout` (exempting the SSE route) lands in phase 8.
 

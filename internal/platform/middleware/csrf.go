@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/AzmainMahtab/chonkboard/internal/shared/authctx"
 )
@@ -76,12 +77,37 @@ func validCSRF(r *http.Request, expected string) bool {
 		return constantTimeEqual(presented, expected)
 	}
 
+	// A multipart body needs ParseMultipartForm: ParseForm reads only
+	// application/x-www-form-urlencoded, so on a file upload it finds no fields at
+	// all and the token looks absent. That made every attachment upload a 403 —
+	// the upload form is a plain <form> with no JavaScript, so a field is its only
+	// way to present a token.
+	//
+	// Both calls cache, so the handler still reads the form and the file afterwards.
+	// Safe to do here only because LimitBody has already capped the body.
+	if isMultipart(r) {
+		if err := r.ParseMultipartForm(csrfMultipartMemory); err != nil {
+			return false
+		}
+		return constantTimeEqual(r.FormValue(CSRFField), expected)
+	}
+
 	// ParseForm reads and caches the body, so the handler can still read the
 	// form afterwards. Without this, consuming the body here would empty it.
 	if err := r.ParseForm(); err != nil {
 		return false
 	}
 	return constantTimeEqual(r.PostForm.Get(CSRFField), expected)
+}
+
+// csrfMultipartMemory is how much of a multipart body is held in memory before the
+// rest spills to a temporary file. Small: the bytes are on their way to disk anyway,
+// and Go removes the temporary file when the request ends.
+const csrfMultipartMemory = 1 << 20
+
+// isMultipart reports whether the body is a multipart form.
+func isMultipart(r *http.Request) bool {
+	return strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data")
 }
 
 // constantTimeEqual compares without leaking how much of the token matched. A

@@ -2,7 +2,9 @@ package components
 
 import (
 	"context"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/a-h/templ"
 
@@ -108,4 +110,32 @@ func activityVerb(e view.ActivityEntry) string {
 		return "changed its labels"
 	}
 	return e.Kind
+}
+
+// itoa keeps strconv out of the templates.
+func itoa(n int) string { return strconv.Itoa(n) }
+
+// now is the clock the due-date colouring reads. A function so a template does not
+// call time.Now() in three places and get three answers.
+func now() time.Time { return time.Now() }
+
+// liveComments counts the comments that are not tombstones, which is the number worth
+// showing next to a heading.
+func liveComments(comments []view.Comment) int {
+	n := 0
+	for _, c := range comments {
+		if !c.IsDeleted {
+			n++
+		}
+	}
+	return n
+}
+
+// labelFormAction is where a label form posts: the collection to create in, or the
+// label itself to update.
+func labelFormAction(projectSlug string, f view.LabelForm) templ.SafeURL {
+	if f.IsNew() {
+		return templ.SafeURL("/projects/" + projectSlug + "/labels")
+	}
+	return templ.SafeURL("/projects/" + projectSlug + "/labels/" + f.UUID)
 }

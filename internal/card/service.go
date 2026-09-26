@@ -44,15 +44,47 @@ type BoardReader interface {
 type Service struct {
 	store *Store
 	board BoardReader
+	files FileStore
 	tx    *database.TxManager
 	log   *slog.Logger
 	now   func() time.Time
+
+	// members answers "may this person see this board", for the assignee check.
+	members Members
+
+	// maxUploadBytes is the ceiling for one attachment, from UPLOAD_MAX_BYTES.
+	maxUploadBytes int64
+}
+
+// ServiceConfig is what this service needs from application configuration.
+type ServiceConfig struct {
+	MaxUploadBytes int64
 }
 
 // NewService wires the service.
-func NewService(store *Store, board BoardReader, tx *database.TxManager, log *slog.Logger) *Service {
-	return &Service{store: store, board: board, tx: tx, log: log, now: time.Now}
+//
+// files may be nil in a test that never attaches anything; Attach refuses rather than
+// panicking if it is.
+func NewService(
+	store *Store, board BoardReader, files FileStore,
+	cfg ServiceConfig, tx *database.TxManager, log *slog.Logger,
+) *Service {
+	if cfg.MaxUploadBytes <= 0 {
+		cfg.MaxUploadBytes = defaultMaxUploadBytes
+	}
+	return &Service{
+		store: store, board: board, files: files, tx: tx, log: log,
+		now: time.Now, maxUploadBytes: cfg.MaxUploadBytes,
+	}
 }
+
+// defaultMaxUploadBytes is the fallback when configuration gives nothing usable. It
+// matches UPLOAD_MAX_BYTES's own default.
+const defaultMaxUploadBytes = 10 << 20
+
+// MaxUploadBytes is the configured ceiling, for a handler that wants to cap the
+// request body before reading it.
+func (s *Service) MaxUploadBytes() int64 { return s.maxUploadBytes }
 
 // WithClock replaces the clock. Tests only.
 func (s *Service) WithClock(now func() time.Time) *Service {
@@ -162,16 +194,29 @@ func (s *Service) Create(
 
 // EditInput is a card as the edit form submits it.
 //
-// Title and description only, for now. Priority, assignee, due date and labels are
-// phase 5; the domain entity and the store already carry them, so this struct grows
-// rather than the plumbing around it.
+// The optional fields are pointers-to-pointers in effect: a nil AssigneeUUID means
+// "no assignee", and the form always submits every field, so there is no "leave
+// unchanged" case to represent. That is deliberate — a partial update would make it
+// impossible to clear a due date, since an absent field and an empty field would look
+// the same.
 type EditInput struct {
 	Title       string
 	Description string
+	Priority    domain.Priority
+	// AssigneeUUID is nil for nobody.
+	AssigneeUUID *string
+	// DueAt is nil for no due date.
+	DueAt *time.Time
+	// LabelUUIDs is the complete set. An empty slice clears every label.
+	LabelUUIDs []string
 }
 
 // Edit saves a card's fields. Any granted member may edit any card on their board —
 // the brief is explicit about that, and it is what makes a shared board work.
+//
+// Every field is written, labels included, in one transaction. The alternative — a
+// separate endpoint per field — would mean a card could be observed half-saved, and
+// would make "clear the due date" indistinguishable from "do not touch it".
 func (s *Service) Edit(
 	ctx context.Context, subj authz.Subject, projectUUID, cardUUID string, in EditInput,
 ) (*domain.Card, error) {
@@ -184,17 +229,34 @@ func (s *Service) Edit(
 		return nil, err
 	}
 
-	// The phase-5 fields are passed back unchanged, so editing a title cannot
-	// silently clear a due date set elsewhere.
+	priority := in.Priority
+	if priority == "" {
+		priority = domain.PriorityNone
+	}
+
+	// Validated before anything is written, and against a copy of nothing — Edit
+	// mutates the entity in place, so a failure here leaves the loaded card dirty
+	// but unsaved, which is exactly what "a rejected edit changes nothing" needs.
 	if err := card.Edit(
-		in.Title, in.Description, card.Priority,
-		card.AssigneeUUID, card.DueAt, s.now(),
+		in.Title, in.Description, priority, in.AssigneeUUID, in.DueAt, s.now(),
 	); err != nil {
 		return nil, err
 	}
 
+	// An assignee has to be somebody with access to this board. Without the check
+	// the foreign key would still refuse an unknown uuid, but a *known* person with
+	// no grant would be assigned work they cannot see.
+	if in.AssigneeUUID != nil {
+		if err := s.checkAssignee(ctx, projectUUID, *in.AssigneeUUID); err != nil {
+			return nil, err
+		}
+	}
+
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
 		if err := s.store.Update(ctx, card); err != nil {
+			return err
+		}
+		if err := s.store.SetLabels(ctx, card.UUID, in.LabelUUIDs); err != nil {
 			return err
 		}
 		return s.record(ctx, card, ActivityUpdated, nil, nil, subj.User.UUID)
@@ -203,6 +265,34 @@ func (s *Service) Edit(
 		return nil, err
 	}
 	return card, nil
+}
+
+// Members is what this slice needs to offer an assignee: who may see this board.
+//
+// Declared here, by the consumer.
+type Members interface {
+	CanSee(ctx context.Context, projectUUID, userUUID string) (bool, error)
+}
+
+// UseMembers supplies the membership check. Called once, at wiring: the project slice
+// needs this one for access resolution, so the two are mutually dependent and one edge
+// is set afterwards.
+func (s *Service) UseMembers(m Members) { s.members = m }
+
+// checkAssignee refuses somebody who cannot see the board.
+func (s *Service) checkAssignee(ctx context.Context, projectUUID, userUUID string) error {
+	if s.members == nil {
+		return nil
+	}
+	ok, err := s.members.CanSee(ctx, projectUUID, userUUID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return apperrors.Validation("That person does not have access to this board.").
+			WithField("assignee", "is not a member of this project")
+	}
+	return nil
 }
 
 // SetArchived archives or restores a card.
@@ -392,4 +482,79 @@ func (s *Service) ProjectOf(ctx context.Context, cardUUID string) (string, error
 		return "", ErrNoSuchCard
 	}
 	return card.ProjectUUID, nil
+}
+
+// MoveToLane appends a card to the end of another lane.
+//
+// This is the keyboard path for a drag, and the no-JavaScript one. Dragging is a
+// pointer gesture; a board whose cards can *only* be dragged is unusable without a
+// mouse, so every move is also reachable from the card's own menu.
+//
+// It builds the complete order server-side and hands it to the same Move the drag
+// uses — one implementation of the ordering rules, one transaction, one WIP check.
+func (s *Service) MoveToLane(
+	ctx context.Context, subj authz.Subject, projectUUID, cardUUID, toLane string,
+) ([]string, error) {
+	if !subj.Can(authz.ActionCardMove) {
+		return nil, apperrors.Forbidden("You cannot move cards on this board.")
+	}
+
+	card, err := s.ByUUID(ctx, subj, projectUUID, cardUUID)
+	if err != nil {
+		return nil, err
+	}
+	if card.LaneUUID == toLane {
+		// Already there. Not an error — the menu should not have offered it, and a
+		// no-op is the honest outcome.
+		return nil, nil
+	}
+
+	// Read both lanes' current contents and derive the orders, rather than asking
+	// the caller for them: a menu has no idea what else is in the target lane.
+	_, target, err := s.ForLane(ctx, subj, projectUUID, toLane)
+	if err != nil {
+		return nil, err
+	}
+	_, source, err := s.ForLane(ctx, subj, projectUUID, card.LaneUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	toOrder := make([]string, 0, len(target)+1)
+	for _, c := range target {
+		toOrder = append(toOrder, c.UUID)
+	}
+	toOrder = append(toOrder, card.UUID)
+
+	fromOrder := make([]string, 0, len(source))
+	for _, c := range source {
+		if c.UUID != card.UUID {
+			fromOrder = append(fromOrder, c.UUID)
+		}
+	}
+
+	return s.Move(ctx, subj, projectUUID, domain.Move{
+		CardUUID:  card.UUID,
+		ToLane:    toLane,
+		ToOrder:   toOrder,
+		FromLane:  card.LaneUUID,
+		FromOrder: fromOrder,
+	})
+}
+
+// LabelUUIDsForCards returns the labels attached to each of a set of cards.
+func (s *Service) LabelUUIDsForCards(
+	ctx context.Context, cardUUIDs []string,
+) (map[string][]string, error) {
+	return s.store.LabelUUIDsForCards(ctx, cardUUIDs)
+}
+
+// CommentCounts returns how many live comments each card has.
+func (s *Service) CommentCounts(ctx context.Context, cardUUIDs []string) (map[string]int, error) {
+	return s.store.CountCommentsForCards(ctx, cardUUIDs)
+}
+
+// AttachmentCounts returns how many files each card has.
+func (s *Service) AttachmentCounts(ctx context.Context, cardUUIDs []string) (map[string]int, error) {
+	return s.store.CountAttachmentsForCards(ctx, cardUUIDs)
 }

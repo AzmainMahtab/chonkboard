@@ -28,6 +28,9 @@ import (
 // like GET /, where there is no project parameter at all.
 type BoardShape interface {
 	LaneSummaries(ctx context.Context, subj authz.Subject, projectUUID string) ([]view.Lane, error)
+	LabelSummaries(ctx context.Context, subj authz.Subject, projectUUID string) ([]view.Label, error)
+	// Colours is the palette both lane and label forms offer.
+	Colours() []string
 }
 
 // HandlerConfig is what the handler needs from application configuration.
@@ -322,6 +325,10 @@ func (h *Handler) settingsView(r *http.Request, access *Access, saved string) (v
 	if err != nil {
 		return view.ProjectSettings{}, err
 	}
+	labels, err := h.board.LabelSummaries(r.Context(), access.Subject, access.Project.UUID)
+	if err != nil {
+		return view.ProjectSettings{}, err
+	}
 
 	members, err := h.svc.Members(r.Context(), access)
 	if err != nil {
@@ -336,6 +343,8 @@ func (h *Handler) settingsView(r *http.Request, access *Access, saved string) (v
 	settings := view.ProjectSettings{
 		Project:         summary,
 		Lanes:           lanes,
+		Labels:          labels,
+		LabelForm:       view.LabelForm{Colours: h.board.Colours()},
 		CanGrantManager: access.Subject.Can(authz.ActionMemberGrantManager),
 		CanArchive:      access.Subject.Can(authz.ActionProjectArchive),
 		CanDelete:       access.Subject.Can(authz.ActionProjectDelete),

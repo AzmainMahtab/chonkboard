@@ -390,3 +390,50 @@ scripting artifact that looked exactly like a real ordering bug.
 
 That leading timestamp is the whole reason for choosing v7 over v4. Print full uuids,
 or key on something else.
+
+## 2026-09-26 — `r.ParseForm` does not read a multipart body
+
+It parses `application/x-www-form-urlencoded` only. On a file upload `r.PostForm` is
+empty, so a CSRF check looking for a token field finds nothing and returns 403 — which
+is how **every attachment upload in this application was broken** until the first
+`curl -F` ran.
+
+Invisible to a JavaScript client that sends the token as a header, and invisible to a
+test that posts a URL-encoded form and calls it an upload. The route test now builds a
+real `multipart.Writer` body for exactly this reason.
+
+`r.ParseMultipartForm` is the fix, but it has to come after a body ceiling: it spools
+past its memory limit to a temporary file, so without one an unbounded upload is written
+to disk before anything can refuse it.
+
+## 2026-09-26 — bluemonday strips `checked`, which silently destroys a checklist
+
+`UGCPolicy` allows no attributes on `input`. A GFM task list then renders `[x]` and
+`[ ]` identically — the markup is still there, the meaning is gone, and nothing errors.
+
+Allowing it back needs a pattern that admits an *empty* value, because goldmark emits
+boolean attributes as `checked=""` in XHTML mode and `SpaceSeparatedTokens` requires at
+least one token. `type` is pinned to `^checkbox$` so no other input kind can appear.
+
+The first version of the test asserted only that `disabled` was present, which would
+have passed with the meaning still destroyed. The assertion that matters is that exactly
+one of two items is ticked.
+
+## 2026-09-26 — a port whose owner is a different slice should be its own port
+
+`card.Handler` briefly had one `People` port with `DisplayName` and `Assignable`.
+`*auth.Service` could not satisfy it, because who may be assigned a card depends on
+project membership — auth's data does not include it.
+
+Two ports, one per owner: `People` (auth) and `Assignees` (project). The compile error
+was the design telling on itself.
+
+## 2026-09-26 — a plain form post and an HTMX post want different answers
+
+Comment, upload and archive all live inside the card modal, which is HTMX-driven in
+practice and a plain form without it. A fragment is the right answer to the first and
+useless as the second — there is no modal left to replace it in.
+
+Every one of these handlers branches on `HX-Request`: fragment, or a redirect to the
+board. Two route tests of mine asserted 200 for a plain post and were simply wrong about
+which branch they were exercising.

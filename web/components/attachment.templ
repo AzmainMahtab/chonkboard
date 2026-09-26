@@ -1,0 +1,79 @@
+package components
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// AttachmentList is a card's files.
+templ AttachmentList(d view.CardDetail) {
+	<div>
+		<h3 class="form-label">
+			Files
+			if len(d.Attachments) > 0 {
+				<span class="font-normal text-ink-3">({ itoa(len(d.Attachments)) })</span>
+			}
+		</h3>
+		if len(d.Attachments) > 0 {
+			<ul class="mb-3 flex flex-col gap-1.5">
+				for _, a := range d.Attachments {
+					@Attachment(a)
+				}
+			</ul>
+		}
+		@attachmentForm(d.Card.UUID)
+	</div>
+}
+
+// Attachment is one file.
+//
+// The link is to `/attachments/{uuid}`, which is authorised per request against the
+// card's project — a leaked URL is not a leaked file. The filename shown is what the
+// uploader called it; it is never what the bytes are stored under.
+templ Attachment(a view.Attachment) {
+	<li class="flex items-center gap-2.5 rounded-card border border-line bg-surface px-3 py-2">
+		<span class="text-ink-3" aria-hidden="true">
+			if a.IsImage {
+				▣
+			} else {
+				⎘
+			}
+		</span>
+		<a
+			href={ templ.SafeURL("/attachments/" + a.UUID) }
+			class="min-w-0 flex-1 truncate text-sm hover:text-accent"
+			title={ a.Filename }
+		>{ a.Filename }</a>
+		<span class="shrink-0 text-2xs tabular-nums text-ink-3">{ a.SizeHuman }</span>
+		<span class="hidden shrink-0 text-2xs text-ink-3 sm:inline">{ a.UploadedBy }</span>
+		if a.CanDelete {
+			<form method="post" action={ templ.SafeURL("/attachments/" + a.UUID + "/delete") }>
+				<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+				<button
+					type="submit"
+					class="rounded-card px-1 text-ink-3 hover:bg-danger/10 hover:text-danger"
+					aria-label={ "Remove " + a.Filename }
+				>&times;</button>
+			</form>
+		}
+	</li>
+}
+
+// attachmentForm is a plain multipart form. No JavaScript, so it works everywhere and
+// the size limit is enforced server-side regardless of what a client claims.
+templ attachmentForm(cardUUID string) {
+	<form
+		method="post"
+		action={ templ.SafeURL("/cards/" + cardUUID + "/attachments") }
+		enctype="multipart/form-data"
+		class="flex flex-wrap items-center gap-2"
+	>
+		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		<label class="sr-only" for={ "file-" + cardUUID }>Attach a file</label>
+		<input
+			id={ "file-" + cardUUID }
+			type="file"
+			name="file"
+			class="field w-auto flex-1 py-1 text-xs file:mr-2 file:rounded-card file:border-0 file:bg-surface-3 file:px-2 file:py-1 file:text-xs"
+			required
+		/>
+		<button type="submit" class="btn-quiet">Attach</button>
+	</form>
+}

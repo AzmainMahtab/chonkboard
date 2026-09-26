@@ -51,6 +51,166 @@ func (h *Handler) LaneSummaries(
 	return toLaneViews(lanes), nil
 }
 
+// LabelSummaries implements project.BoardShape: a board's labels for the settings
+// page.
+func (h *Handler) LabelSummaries(
+	ctx context.Context, subj authz.Subject, projectUUID string,
+) ([]view.Label, error) {
+	labels, err := h.svc.Labels(ctx, subj, projectUUID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]view.Label, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, view.Label{UUID: l.UUID, Name: l.Name, Color: string(l.Colour)})
+	}
+	return out, nil
+}
+
+// Colours implements project.BoardShape: the palette, derived from the domain's list
+// so the forms and the schema's CHECK cannot disagree.
+func (h *Handler) Colours() []string { return colourNames() }
+
+// NewLabel renders the create form for a label. The settings page renders one inline,
+// so this exists for the edit case and for a direct link.
+func (h *Handler) EditLabel(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.manageable(w, r)
+	if !ok {
+		return
+	}
+
+	labelUUID := chi.URLParam(r, "label")
+	labels, err := h.svc.Labels(r.Context(), access.Subject, access.Project.UUID)
+	if err != nil {
+		h.projects.Fail(w, r, err)
+		return
+	}
+
+	settings, err := h.projects.SettingsView(r, access, "")
+	if err != nil {
+		h.projects.Fail(w, r, err)
+		return
+	}
+	for _, l := range labels {
+		if l.UUID != labelUUID {
+			continue
+		}
+		settings.LabelForm = view.LabelForm{
+			UUID: l.UUID, Name: l.Name, Colour: string(l.Colour), Colours: colourNames(),
+		}
+		render.Page(w, r, http.StatusOK, pages.ProjectSettingsPage(
+			h.projects.Page(r, access.Project.Name+" settings"), settings))
+		return
+	}
+	h.projects.Fail(w, r, apperrors.NotFound("No such label."))
+}
+
+// CreateLabel adds a project label.
+func (h *Handler) CreateLabel(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.manageable(w, r)
+	if !ok {
+		return
+	}
+	in, form, err := labelInputFrom(r)
+	if err != nil {
+		h.labelFailure(w, r, access, form, err)
+		return
+	}
+
+	if _, err := h.svc.CreateLabel(r.Context(), access.Subject, access.Project.UUID, in); err != nil {
+		h.labelFailure(w, r, access, form, err)
+		return
+	}
+	h.redirectToSettings(w, r, access.Project.Slug, "Label added.")
+}
+
+// UpdateLabel renames and recolours a label.
+func (h *Handler) UpdateLabel(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.manageable(w, r)
+	if !ok {
+		return
+	}
+	labelUUID := chi.URLParam(r, "label")
+	in, form, err := labelInputFrom(r)
+	form.UUID = labelUUID
+	if err != nil {
+		h.labelFailure(w, r, access, form, err)
+		return
+	}
+
+	if _, err := h.svc.UpdateLabel(
+		r.Context(), access.Subject, access.Project.UUID, labelUUID, in,
+	); err != nil {
+		h.labelFailure(w, r, access, form, err)
+		return
+	}
+	h.redirectToSettings(w, r, access.Project.Slug, "Label saved.")
+}
+
+// DeleteLabel removes a label. Its assignments to cards cascade.
+func (h *Handler) DeleteLabel(w http.ResponseWriter, r *http.Request) {
+	access, ok := h.manageable(w, r)
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteLabel(
+		r.Context(), access.Subject, access.Project.UUID, chi.URLParam(r, "label"),
+	); err != nil {
+		h.projects.Fail(w, r, err)
+		return
+	}
+	h.redirectToSettings(w, r, access.Project.Slug, "Label deleted.")
+}
+
+// labelInputFrom parses the label form.
+func labelInputFrom(r *http.Request) (LabelInput, view.LabelForm, error) {
+	if err := r.ParseForm(); err != nil {
+		return LabelInput{}, view.LabelForm{},
+			apperrors.Invalid("That form could not be read.").Wrap(err)
+	}
+
+	form := view.LabelForm{
+		Name:    r.PostForm.Get("name"),
+		Colour:  r.PostForm.Get("color"),
+		Colours: colourNames(),
+	}
+	if form.Colour == "" {
+		form.Colour = string(domain.ColourSlate)
+	}
+	return LabelInput{Name: form.Name, Colour: domain.Colour(form.Colour)}, form, nil
+}
+
+// labelFailure re-renders the settings page with the label form's errors on it.
+func (h *Handler) labelFailure(
+	w http.ResponseWriter, r *http.Request, access *project.Access,
+	form view.LabelForm, err error,
+) {
+	app := apperrors.From(err)
+	if app.Status() >= 500 {
+		h.projects.Fail(w, r, err)
+		return
+	}
+
+	for _, f := range app.Fields {
+		if f.Field == "name" {
+			form.NameError = f.Message
+		}
+	}
+	if form.NameError == "" {
+		form.Error = app.Message
+	}
+
+	settings, buildErr := h.projects.SettingsView(r, access, "")
+	if buildErr != nil {
+		h.projects.Fail(w, r, buildErr)
+		return
+	}
+	settings.LabelForm = form
+
+	render.Page(w, r, app.Status(), pages.ProjectSettingsPage(
+		h.projects.Page(r, access.Project.Name+" settings"), settings))
+}
+
 // NewLane renders the create form.
 func (h *Handler) NewLane(w http.ResponseWriter, r *http.Request) {
 	access, ok := h.manageable(w, r)

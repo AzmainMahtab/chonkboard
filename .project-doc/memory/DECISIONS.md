@@ -502,3 +502,129 @@ The create form offers both fields because asking somebody to save twice to writ
 sentence is hostile. Keeping `Create` to a title keeps the "new card" concept small,
 and the second write is in the same request. If this ever needs to be one
 transaction, the service is where that changes — not the form.
+
+## 2026-09-26 — markdown is rendered server-side and sanitised, with raw HTML escaped
+
+goldmark without `WithUnsafe`, then bluemonday's `UGCPolicy`. Two lines of defence,
+and the first one means raw HTML in a card body is escaped before the sanitiser even
+sees it.
+
+**The CSP does not cover this.** It blocks script; injected markup needs none — a form
+posting to another origin, an iframe, an `onerror` on an image, a `javascript:` href, a
+fixed-position element covering the page. Every one of those is a way to do damage with
+no `<script>` tag, and every one is in the test.
+
+Rendering client-side would be worse: the sanitiser would be the client's, and a client
+that skipped it would render whatever was stored.
+
+Links carry `rel="nofollow noopener noreferrer"` and `target="_blank"`, so an opened
+page cannot reach back through `window.opener`.
+
+## 2026-09-26 — attachments live on disk, addressed by a generated name
+
+`internal/platform/filestore`, not a BLOB column, and never under the uploader's
+filename.
+
+Not in the database, because a 10MB blob in a row makes every query that touches the
+table drag it through memory, makes `VACUUM INTO` backups proportional to total upload
+size rather than to the board, and gives up being served by a syscall.
+
+Not under the uploader's name, because a user-supplied filename reaching the filesystem
+is a path-traversal bug (`../../etc/passwd`), a collision between two people uploading
+`report.pdf`, and on a case-insensitive filesystem a way to overwrite somebody else's
+file. The original is kept in the database and used only in a `Content-Disposition`
+header. `pathFor` re-validates the name anyway — it is the last line before a path
+reaches the filesystem, and "it cannot happen" is how traversal bugs get written.
+
+Files are fanned out into 256 subdirectories by their first byte: one directory with
+tens of thousands of entries is slow to list and, on some filesystems, slow to open a
+file in.
+
+## 2026-09-26 — the upload type check is an allowlist
+
+A denylist is a guess at what is dangerous, and it is always incomplete. Everything on
+the list is something a browser renders inertly or offers to download; `text/html` and
+`image/svg+xml` are deliberately absent, because both execute script.
+
+Every response carries `Content-Disposition: attachment` **and** `nosniff` regardless,
+so even a file whose declared type is wrong cannot execute in this origin. The
+allowlist is the first line, not the only one.
+
+The claimed type is normalised (parameters dropped, folded to lower case) and falls
+back to the extension when a browser sends `application/octet-stream`, which it does
+for anything it does not recognise.
+
+## 2026-09-26 — a leaked attachment URL is not a leaked file
+
+`/attachments/{x}` is authorised per request against the card's project, and **every**
+refusal is `ErrNoSuchAttachment` — a 404.
+
+A 403 would confirm the file exists. The URL carries no project, so there is nothing to
+make that harmless. The route test asserts the response to a leaked URL is
+**byte-identical** to the response to a made-up id, because a difference in length or
+wording is an oracle just as much as a difference in status.
+
+The same reasoning covers a row whose bytes have gone missing: that is our bug, but
+there is nothing the person can do, so it reports as missing rather than as a 500.
+
+## 2026-09-26 — the CSRF check parses a multipart body
+
+`r.ParseForm` reads only `application/x-www-form-urlencoded`. On a file upload it finds
+no fields at all, so the token looked absent and **every attachment upload was a 403**.
+The upload form is a plain `<form>` with no JavaScript, so a field is its only way to
+present a token.
+
+Fixing it needed a ceiling to exist first: parsing a multipart body in middleware spools
+it to disk, so an unbounded upload would be written before anything could refuse it.
+Hence `middleware.LimitBody`, applied globally before anything parses a body, at
+`UPLOAD_MAX_BYTES` plus a megabyte of envelope slack. That was planned for phase 8; it
+had to come now.
+
+## 2026-09-26 — a deleted comment leaves a tombstone
+
+`comments.deleted_at`, not a `DELETE`.
+
+A thread that silently loses a message leaves the replies above it making no sense. The
+row stays and renders as "X removed a comment"; it stops counting towards the card's
+badge. Deleting twice is not an error, because a double-submitted form must not show a
+failure for something that already happened.
+
+## 2026-09-26 — the card form submits every field, every time
+
+There is no partial update. An absent field and a cleared field would otherwise be
+indistinguishable, which makes "clear the due date" inexpressible.
+
+The consequence is that `EditInput` carries `nil` for "nobody" and "no due date", and an
+empty `LabelUUIDs` clears every label. All of it lands in one transaction, so a card is
+never observed half-saved. A separate endpoint per field would have avoided the
+ambiguity and bought three more round trips and a half-saved state.
+
+## 2026-09-26 — an assignee must have access to the board
+
+`card.Service` asks `project.Service.CanSee` before writing one.
+
+The foreign key already refuses an unknown uuid. This catches a *known* person with no
+grant, who would otherwise be assigned work they cannot open. It is a second
+consumer-declared port (`Members`) rather than a method on the existing `People` port,
+because membership is the project slice's data and names are auth's — one port per
+owner.
+
+## 2026-09-26 — "Move to lane…" builds the order server-side
+
+The keyboard path for a drag posts only a target lane; the service reads both lanes and
+derives the two orders itself, then calls the same `Move` the drag uses.
+
+A menu has no idea what else is in the target lane, so asking the client for an order
+would mean inventing one. Going through `Move` means one implementation of the ordering
+rules, one transaction, and the same WIP check — verified by a test that trips the limit
+through this path.
+
+## 2026-09-26 — a filename in a header is sanitised, and carried twice
+
+`Content-Disposition` gets an ASCII-only quoted `filename=` with quotes, separators,
+control characters and non-ASCII stripped, plus `filename*=UTF-8''…` per RFC 5987.
+
+A filename is the one piece of user input that reaches a response header. A quote closes
+the quoted string early; a CR or LF ends the header and starts another. Both are header
+injection. The `filename*` form carries the real name for a browser that understands it,
+while the quoted form stays a safe fallback for one that does not.

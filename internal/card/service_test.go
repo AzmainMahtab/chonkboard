@@ -2,6 +2,7 @@ package card_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/AzmainMahtab/chonkboard/internal/card/domain"
 	"github.com/AzmainMahtab/chonkboard/internal/platform/database"
 	"github.com/AzmainMahtab/chonkboard/internal/platform/database/dbtest"
+	"github.com/AzmainMahtab/chonkboard/internal/platform/filestore"
 	projectdomain "github.com/AzmainMahtab/chonkboard/internal/project/domain"
 	"github.com/AzmainMahtab/chonkboard/internal/shared/apperrors"
 	"github.com/AzmainMahtab/chonkboard/internal/shared/authz"
@@ -41,9 +43,13 @@ func newService(t *testing.T) *serviceFixture {
 	ctx := context.Background()
 	log := dbtest.Discard()
 
+	uploads, err := filestore.NewDisk(filepath.Join(t.TempDir(), "uploads"))
+	require.NoError(t, err)
+
 	boardSvc := board.NewService(board.NewStore(tx), tx, log)
 	f := &serviceFixture{
-		svc:   card.NewService(card.NewStore(tx), boardSvc, tx, log),
+		svc: card.NewService(card.NewStore(tx), boardSvc, uploads,
+			card.ServiceConfig{MaxUploadBytes: 64 << 10}, tx, log),
 		board: boardSvc,
 		db:    db,
 		ctx:   ctx,
@@ -53,7 +59,7 @@ func newService(t *testing.T) *serviceFixture {
 	f.member = f.addUser(t, "member@example.com", authdomain.RoleMember)
 
 	f.project = idgenerator.NewUUIDv7()
-	_, err := db.Writer().NamedExecContext(ctx, `
+	_, err = db.Writer().NamedExecContext(ctx, `
 		INSERT INTO projects (uuid, slug, name, created_by, created_at, updated_at)
 		VALUES (:uuid, 'chonk', 'Chonkboard', :owner, :now, :now)`,
 		map[string]any{"uuid": f.project, "owner": f.owner.UUID, "now": database.Now()})
@@ -567,3 +573,28 @@ func TestServiceClockIsInjectable(t *testing.T) {
 	c := f.add(t, f.asMember(), 0, "timed")
 	assert.True(t, at.Equal(c.CreatedAt))
 }
+
+// otherProject makes a second board with its own lanes, so a test can borrow a
+// foreign card, lane, label, comment or attachment from it.
+func (f *serviceFixture) otherProject(t *testing.T) string {
+	t.Helper()
+	uuid := idgenerator.NewUUIDv7()
+	_, err := f.db.Writer().NamedExecContext(f.ctx, `
+		INSERT INTO projects (uuid, slug, name, created_by, created_at, updated_at)
+		VALUES (:uuid, 'other', 'Other', :owner, :now, :now)`,
+		map[string]any{"uuid": uuid, "owner": f.owner.UUID, "now": database.Now()})
+	require.NoError(t, err)
+	require.NoError(t, f.board.SeedDefaultLanes(f.ctx, uuid))
+	return uuid
+}
+
+// stubMembers answers the assignee check without a project service, which would drag
+// the whole slice in for one boolean.
+type stubMembers struct{ allowed map[string]bool }
+
+func (s stubMembers) CanSee(_ context.Context, _, userUUID string) (bool, error) {
+	return s.allowed[userUUID], nil
+}
+
+// authRoleMember keeps the auth domain import out of rich_test.go's signatures.
+func authRoleMember() authdomain.Role { return authdomain.RoleMember }

@@ -1,0 +1,82 @@
+package components
+
+import "github.com/AzmainMahtab/chonkboard/web/view"
+
+// CommentList is a card's discussion, oldest first — the order a thread is read in.
+templ CommentList(d view.CardDetail) {
+	<div>
+		<h3 class="form-label">
+			Comments
+			if len(d.Comments) > 0 {
+				<span class="font-normal text-ink-3">({ itoa(liveComments(d.Comments)) })</span>
+			}
+		</h3>
+		if len(d.Comments) > 0 {
+			<ol class="mb-3 flex flex-col gap-2.5">
+				for _, c := range d.Comments {
+					@Comment(c)
+				}
+			</ol>
+		}
+		@commentForm(d.Card.UUID)
+	</div>
+}
+
+// Comment is one entry.
+//
+// A removed comment leaves a tombstone rather than vanishing: a thread that silently
+// loses a message leaves the replies above it making no sense.
+templ Comment(c view.Comment) {
+	<li id={ "comment-" + c.UUID } class="rounded-card border border-line bg-surface px-3 py-2">
+		if c.IsDeleted {
+			<p class="text-xs italic text-ink-3">
+				{ c.Author } removed a comment.
+			</p>
+		} else {
+			<div class="flex items-baseline gap-2 text-xs">
+				<span class="font-medium text-ink-2">{ c.Author }</span>
+				<time
+					class="text-ink-3 tabular-nums"
+					datetime={ c.CreatedAt.Format("2006-01-02T15:04:05Z07:00") }
+				>{ c.CreatedAt.Format("2 Jan, 15:04") }</time>
+				if c.CanDelete {
+					<form
+						method="post"
+						action={ templ.SafeURL("/comments/" + c.UUID + "/delete") }
+						class="ml-auto"
+					>
+						<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+						<button
+							type="submit"
+							class="rounded-card px-1 text-ink-3 hover:bg-danger/10 hover:text-danger"
+							aria-label="Remove this comment"
+						>&times;</button>
+					</form>
+				}
+			</div>
+			<div class="prose-card mt-1">
+				@templ.Raw(c.BodyHTML)
+			</div>
+		}
+	</li>
+}
+
+templ commentForm(cardUUID string) {
+	<form
+		method="post"
+		action={ templ.SafeURL("/cards/" + cardUUID + "/comments") }
+		class="flex flex-col gap-2"
+	>
+		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+		<label class="sr-only" for={ "comment-body-" + cardUUID }>Add a comment</label>
+		<textarea
+			id={ "comment-body-" + cardUUID }
+			name="body"
+			class="field min-h-16 resize-y text-sm"
+			maxlength="5000"
+			placeholder="Add a comment… markdown works"
+			required
+		></textarea>
+		<button type="submit" class="btn-quiet self-start">Comment</button>
+	</form>
+}

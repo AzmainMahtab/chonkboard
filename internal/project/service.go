@@ -438,3 +438,69 @@ func (s *Service) requireAnotherManager(ctx context.Context, projectUUID string)
 	}
 	return nil
 }
+
+// CanSee reports whether somebody may open a board.
+//
+// The card slice uses it to refuse an assignee with no grant: the foreign key would
+// still catch an unknown uuid, but a known person with no access would otherwise be
+// assigned work they cannot see. The operator can see every board, which is why this
+// cannot be a bare membership lookup.
+func (s *Service) CanSee(ctx context.Context, projectUUID, userUUID string) (bool, error) {
+	user, err := s.users.UserByUUID(ctx, userUUID)
+	if err != nil || user == nil {
+		return false, err
+	}
+
+	membership, err := s.store.Membership(ctx, projectUUID, userUUID)
+	if err != nil {
+		return false, err
+	}
+
+	var role *domain.ProjectRole
+	if membership != nil {
+		role = &membership.Role
+	}
+	return authz.NewSubject(user, role).CanSeeProject(), nil
+}
+
+// Person is somebody who can see a board, reduced to what a picker needs.
+type Person struct {
+	UUID        string
+	DisplayName string
+	Email       string
+}
+
+// People returns everyone who may open a board, for an assignee picker.
+//
+// The operator is included even without a grant — their access is global, and a board
+// they administer is one they can be assigned work on. Suspended accounts are left out:
+// assigning work to somebody who cannot sign in is assigning it to nobody.
+func (s *Service) People(ctx context.Context, projectUUID string) ([]Person, error) {
+	grants, err := s.store.Members(ctx, projectUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	granted := make(map[string]struct{}, len(grants))
+	for _, g := range grants {
+		granted[g.UserUUID] = struct{}{}
+	}
+
+	all, err := s.users.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Person, 0, len(grants)+1)
+	for _, u := range all {
+		if !u.CanSignIn() {
+			continue
+		}
+		_, isMember := granted[u.UUID]
+		if !isMember && !u.IsSuperAdmin() {
+			continue
+		}
+		out = append(out, Person{UUID: u.UUID, DisplayName: u.DisplayName, Email: u.Email})
+	}
+	return out, nil
+}

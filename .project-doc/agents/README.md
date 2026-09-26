@@ -132,7 +132,20 @@ under "Traps", and you should read that section in full at least once.
     last card out of a lane.
 30. **Card forms POST, never PATCH or DELETE.** A browser form can only issue GET or
     POST, and every form here must work with no JavaScript.
-31. **`web/` must never import a `*/domain` package.** The CSRF token reaches a
+31. **A card body and a comment are rendered through `internal/shared/markdown`,**
+    never passed to the browser raw and never rendered client-side. The CSP does not
+    make injected markup safe — a form, an iframe or an `onerror` needs no script.
+32. **`r.ParseForm` does not read a multipart body.** Use `ParseMultipartForm`, and
+    only after `LimitBody` has capped the request.
+33. **An attachment is authorised per request and refused with 404, never 403.** A 403
+    confirms the file exists; the URL carries no project to make that harmless.
+34. **Attachment bytes never live under the uploader's filename.** `filestore.NewName`
+    generates one; the original is display and `Content-Disposition` only.
+35. **Uploads are checked against an allowlist,** and every response carries
+    `Content-Disposition: attachment` and `nosniff` regardless.
+36. **The card form submits every field every time.** There is no partial update,
+    because an absent field and a cleared field would be indistinguishable.
+37. **`web/` must never import a `*/domain` package.** The CSRF token reaches a
     fragment through `view.CSRF`, not `authctx`, for exactly this reason. There is
     no gate enforcing it, so check with
     `go list -deps ./web/... | grep internal/.*/domain`.

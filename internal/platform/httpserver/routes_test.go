@@ -1,11 +1,15 @@
 package httpserver_test
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -19,6 +23,7 @@ import (
 	"github.com/AzmainMahtab/chonkboard/internal/board"
 	"github.com/AzmainMahtab/chonkboard/internal/card"
 	"github.com/AzmainMahtab/chonkboard/internal/platform/database/dbtest"
+	"github.com/AzmainMahtab/chonkboard/internal/platform/filestore"
 	"github.com/AzmainMahtab/chonkboard/internal/platform/httpserver"
 	"github.com/AzmainMahtab/chonkboard/internal/platform/middleware"
 	"github.com/AzmainMahtab/chonkboard/internal/project"
@@ -72,8 +77,13 @@ func newHarness(t *testing.T) *harness {
 	projectHandler.UseBoardShape(boardHandler)
 
 	hub := sse.NewHub(log)
-	cardService := card.NewService(card.NewStore(tx), boardService, tx, log)
-	cardHandler := card.NewHandler(cardService, projectHandler, boardService, service, hub, log)
+	uploads, err := filestore.NewDisk(filepath.Join(t.TempDir(), "uploads"))
+	require.NoError(t, err)
+	cardService := card.NewService(card.NewStore(tx), boardService, uploads,
+		card.ServiceConfig{MaxUploadBytes: 64 << 10}, tx, log)
+	cardHandler := card.NewHandler(cardService, projectHandler, boardService,
+		service, projectService, hub, log)
+	cardService.UseMembers(projectService)
 
 	loginByIP := ratelimit.New(loginBurstPerIP, time.Minute)
 	loginByEmail := ratelimit.New(loginBurstPerEmail, time.Minute)
@@ -93,13 +103,14 @@ func newHarness(t *testing.T) *harness {
 			SessionMaxAge: int((24 * time.Hour).Seconds()),
 			AssetSuffix:   "?v=test",
 		}, log),
-		Projects:     projectHandler,
-		BoardMgr:     boardHandler,
-		Cards:        cardHandler,
-		Session:      service,
-		SessionCfg:   sessionCfg,
-		LoginByIP:    loginByIP,
-		LoginByEmail: loginByEmail,
+		Projects:        projectHandler,
+		BoardMgr:        boardHandler,
+		Cards:           cardHandler,
+		Session:         service,
+		SessionCfg:      sessionCfg,
+		LoginByIP:       loginByIP,
+		LoginByEmail:    loginByEmail,
+		MaxRequestBytes: (64 << 10) + (1 << 20),
 	})
 
 	return &harness{
@@ -178,6 +189,10 @@ func sessionCookie(rec *httptest.ResponseRecorder) *http.Cookie {
 	}
 	return nil
 }
+
+// bodyOf is body under another name, for the one place a local variable called body
+// shadows it.
+func bodyOf(rec *httptest.ResponseRecorder) string { return body(rec) }
 
 func body(rec *httptest.ResponseRecorder) string {
 	b, _ := io.ReadAll(rec.Result().Body)
@@ -1486,4 +1501,471 @@ func TestTheAddCardControlIsRenderedNow(t *testing.T) {
 	page := body(h.get("/projects/"+p.Slug, cookie))
 	assert.Contains(t, page, "Add a card")
 	assert.Contains(t, page, "/cards/new")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: the rich card.
+// ---------------------------------------------------------------------------
+
+// upload posts a multipart file onto a card.
+//
+// A real multipart request, because that is the shape the bug was in: the CSRF check
+// has to find its token inside a multipart body, and r.ParseForm does not read one.
+func (h *boardHarness) upload(
+	cookie *http.Cookie, csrf, cardUUID, filename, contentType string, content []byte,
+) *httptest.ResponseRecorder {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	_ = w.WriteField("csrf_token", csrf)
+
+	head := make(textproto.MIMEHeader)
+	head.Set("Content-Disposition",
+		`form-data; name="file"; filename="`+filename+`"`)
+	head.Set("Content-Type", contentType)
+	part, _ := w.CreatePart(head)
+	_, _ = part.Write(content)
+	_ = w.Close()
+
+	r := httptest.NewRequest(http.MethodPost, "/cards/"+cardUUID+"/attachments", &body)
+	r.Header.Set("Content-Type", w.FormDataContentType())
+	r.AddCookie(cookie)
+	return h.do(r)
+}
+
+// makeLabel creates a project label and returns its uuid.
+func (h *boardHarness) makeLabel(
+	t *testing.T, cookie *http.Cookie, csrf string, p *projectdomain.Project, name, colour string,
+) string {
+	t.Helper()
+	rec := h.postForm("/projects/"+p.Slug+"/labels", url.Values{
+		"csrf_token": {csrf}, "name": {name}, "color": {colour},
+	}, cookie)
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+
+	access, err := h.projects.Resolve(h.ctx, h.mustUser(t, "owner@example.com"), p.Slug)
+	require.NoError(t, err)
+	labels, err := h.board.Labels(h.ctx, access.Subject, p.UUID)
+	require.NoError(t, err)
+	for _, l := range labels {
+		if l.Name == name {
+			return l.UUID
+		}
+	}
+	t.Fatalf("label %q was not created", name)
+	return ""
+}
+
+func (h *boardHarness) mustUser(t *testing.T, email string) *authdomain.User {
+	t.Helper()
+	u, err := h.store.UserByEmail(h.ctx, email)
+	require.NoError(t, err)
+	require.NotNil(t, u)
+	return u
+}
+
+func TestEveryRichFieldRoundTripsOverHTTP(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Rich Cards")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+
+	bug := h.makeLabel(t, cookie, csrf, p, "bug", "rose")
+	chore := h.makeLabel(t, cookie, csrf, p, "chore", "teal")
+
+	rec := h.postForm("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
+		"csrf_token":  {csrf},
+		"title":       {"A rich card"},
+		"description": {"## Heading\n\nSome **bold** text."},
+		"priority":    {"urgent"},
+		"due_at":      {"2026-11-03"},
+		"assignee":    {owner.UUID},
+		"labels":      {bug, chore},
+	}, cookie)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	cardUUID := cardUUIDsIn(body(rec))[0]
+	page := body(h.get("/cards/"+cardUUID, cookie))
+
+	assert.Contains(t, page, "A rich card")
+	assert.Contains(t, page, "Urgent")
+	assert.Contains(t, page, "3 Nov 2026")
+	assert.Contains(t, page, ">bug<")
+	assert.Contains(t, page, ">chore<")
+	assert.Contains(t, page, "<strong>bold</strong>", "markdown is rendered")
+	assert.Contains(t, page, "<h2", "and its headings survive")
+
+	t.Run("and the edit form comes back filled in", func(t *testing.T) {
+		form := body(h.get("/cards/"+cardUUID+"/edit", cookie))
+		assert.Contains(t, form, `value="2026-11-03"`)
+		assert.Contains(t, form, `value="urgent" selected`)
+		assert.Contains(t, form, owner.UUID)
+	})
+
+	t.Run("and the board shows the chips and the due date", func(t *testing.T) {
+		board := body(h.get("/projects/"+p.Slug, cookie))
+		assert.Contains(t, board, ">bug<")
+		assert.Contains(t, board, "before:bg-danger", "urgent draws the priority rule")
+		assert.Contains(t, board, "3 Nov")
+	})
+}
+
+// TestMarkdownRendersInertOverHTTP is the gate. The CSP blocks script; none of these
+// needs a script tag.
+func TestMarkdownRendersInertOverHTTP(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Rich Cards")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+
+	hostile := `<script>alert(1)</script>` + "\n" +
+		`<img src=x onerror="alert(2)">` + "\n" +
+		`[click](javascript:alert(3))` + "\n" +
+		`<iframe src="https://evil.example"></iframe>` + "\n" +
+		`<form action="https://evil.example"><input name="p"></form>` + "\n" +
+		`<svg onload="alert(4)"></svg>`
+
+	require.Equal(t, http.StatusOK, h.postForm("/cards/"+cardUUID, url.Values{
+		"csrf_token": {csrf}, "title": {"a card"}, "description": {hostile},
+	}, cookie).Code)
+	require.Equal(t, http.StatusSeeOther, h.postForm("/cards/"+cardUUID+"/comments", url.Values{
+		"csrf_token": {csrf}, "body": {hostile},
+	}, cookie).Code)
+
+	page := strings.ToLower(body(h.get("/cards/"+cardUUID, cookie)))
+
+	for _, probe := range []string{
+		"<script", "onerror", "onload", "javascript:", "<iframe", "<svg", "alert(",
+	} {
+		assert.NotContains(t, page, probe,
+			"%q survived into the rendered card", probe)
+	}
+
+	// The only forms on the page are the application's own.
+	for _, action := range regexp.MustCompile(`<form[^>]+action="([^"]*)"`).
+		FindAllStringSubmatch(page, -1) {
+		assert.True(t, strings.HasPrefix(action[1], "/"),
+			"a form posting to %q was injected", action[1])
+	}
+}
+
+func TestAttachmentUploadAndDownload(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Rich Cards")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+
+	// A real multipart post: the CSRF token has to be found inside the body, which
+	// r.ParseForm cannot do and which made every upload a 403.
+	//
+	// 303 because this is a plain form post — only an HTMX request gets the refreshed
+	// panel back. What matters here is that it is not a 403.
+	rec := h.upload(cookie, csrf, cardUUID, "notes.csv", "text/csv", []byte("a,b\n1,2\n"))
+	require.Equal(t, http.StatusSeeOther, rec.Code,
+		"a multipart post must pass the CSRF check")
+
+	page := body(h.get("/cards/"+cardUUID, cookie))
+	assert.Contains(t, page, "notes.csv")
+
+	attachmentUUID := regexp.MustCompile(`/attachments/([0-9a-f-]{36})"`).
+		FindStringSubmatch(page)
+	require.Len(t, attachmentUUID, 2)
+
+	t.Run("an HTMX upload returns the refreshed card panel", func(t *testing.T) {
+		var body bytes.Buffer
+		w := multipart.NewWriter(&body)
+		_ = w.WriteField("csrf_token", csrf)
+		head := make(textproto.MIMEHeader)
+		head.Set("Content-Disposition", `form-data; name="file"; filename="second.csv"`)
+		head.Set("Content-Type", "text/csv")
+		part, _ := w.CreatePart(head)
+		_, _ = part.Write([]byte("x"))
+		_ = w.Close()
+
+		r := httptest.NewRequest(http.MethodPost, "/cards/"+cardUUID+"/attachments", &body)
+		r.Header.Set("Content-Type", w.FormDataContentType())
+		r.Header.Set("HX-Request", "true")
+		r.AddCookie(cookie)
+
+		rec := h.do(r)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, bodyOf(rec), "second.csv")
+	})
+
+	t.Run("download", func(t *testing.T) {
+		rec := h.get("/attachments/"+attachmentUUID[1], cookie)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "a,b\n1,2\n", body(rec))
+		assert.Equal(t, "text/csv", rec.Header().Get("Content-Type"))
+		assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+		assert.Contains(t, rec.Header().Get("Content-Disposition"), "attachment;",
+			"always a download, never rendered in this origin")
+		assert.Contains(t, rec.Header().Get("Content-Disposition"), `filename="notes.csv"`)
+	})
+}
+
+func TestAnOversizedUploadIsRefusedWithAReadableMessage(t *testing.T) {
+	// Not by aborting the connection: a person who picked a large file deserves to
+	// be told which limit they hit.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Rich Cards")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+
+	rec := h.upload(cookie, csrf, cardUUID, "big.png", "image/png",
+		bytes.Repeat([]byte("x"), (64<<10)+1))
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	assert.Contains(t, body(rec), "too large")
+
+	assert.NotContains(t, body(h.get("/cards/"+cardUUID, cookie)), "big.png",
+		"a refused upload leaves no row")
+}
+
+func TestADisallowedFileTypeIsRefused(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Rich Cards")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+
+	for name, f := range map[string]struct{ filename, mime string }{
+		"a shell script": {"x.sh", "application/x-sh"},
+		"html":           {"x.html", "text/html"},
+		"an svg":         {"x.svg", "image/svg+xml"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := h.upload(cookie, csrf, cardUUID, f.filename, f.mime, []byte("x"))
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Contains(t, body(rec), "cannot be attached")
+		})
+	}
+}
+
+// TestALeakedAttachmentURLIsNotALeakedFile is the gate. The refusal must be
+// indistinguishable from a made-up id, or the response confirms the file exists.
+func TestALeakedAttachmentURLIsNotALeakedFile(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	h.addUser(t, "stranger@example.com", authdomain.RoleMember)
+
+	p := h.makeProject(t, owner, "Private Board")
+	ownerCookie, _ := h.signIn(t, "owner@example.com")
+	ownerCSRF := h.csrfFor(t, ownerCookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, ownerCookie, ownerCSRF, p, lanes[0], "a card")
+
+	require.Equal(t, http.StatusSeeOther,
+		h.upload(ownerCookie, ownerCSRF, cardUUID, "secret.pdf", "application/pdf",
+			[]byte("confidential")).Code)
+
+	page := body(h.get("/cards/"+cardUUID, ownerCookie))
+	match := regexp.MustCompile(`/attachments/([0-9a-f-]{36})"`).FindStringSubmatch(page)
+	require.Len(t, match, 2)
+	attachmentUUID := match[1]
+
+	cookie, csrf := h.signIn(t, "stranger@example.com")
+
+	leaked := h.get("/attachments/"+attachmentUUID, cookie)
+	madeUp := h.get("/attachments/00000000-0000-7000-8000-000000000000", cookie)
+
+	assert.Equal(t, http.StatusNotFound, leaked.Code, "404, never 403")
+	assert.Equal(t, http.StatusNotFound, madeUp.Code)
+	assert.Equal(t, body(madeUp), body(leaked),
+		"the two responses must be indistinguishable")
+	assert.NotContains(t, body(leaked), "confidential")
+	assert.NotContains(t, body(leaked), "secret.pdf")
+
+	t.Run("and they cannot delete it or upload to that card", func(t *testing.T) {
+		assert.Equal(t, http.StatusNotFound, h.postForm(
+			"/attachments/"+attachmentUUID+"/delete",
+			url.Values{"csrf_token": {csrf}}, cookie).Code)
+		assert.Equal(t, http.StatusNotFound,
+			h.upload(cookie, csrf, cardUUID, "x.csv", "text/csv", []byte("x")).Code)
+	})
+}
+
+func TestCommentsOverHTTP(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Rich Cards")
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+	lanes := h.laneUUIDs(t, owner, p)
+
+	ownerCookie, _ := h.signIn(t, "owner@example.com")
+	ownerCSRF := h.csrfFor(t, ownerCookie)
+	cardUUID := h.addCard(t, ownerCookie, ownerCSRF, p, lanes[0], "a card")
+	require.Equal(t, http.StatusSeeOther, h.postForm("/cards/"+cardUUID+"/comments",
+		url.Values{"csrf_token": {ownerCSRF}, "body": {"the owner's comment"}}, ownerCookie).Code)
+
+	cookie, csrf := h.signIn(t, "member@example.com")
+	require.Equal(t, http.StatusSeeOther, h.postForm("/cards/"+cardUUID+"/comments",
+		url.Values{"csrf_token": {csrf}, "body": {"a **member's** comment"}}, cookie).Code)
+
+	page := body(h.get("/cards/"+cardUUID, cookie))
+	assert.Contains(t, page, "the owner&#39;s comment")
+	assert.Contains(t, page, "<strong>member&#39;s</strong>", "markdown is rendered")
+
+	comments := regexp.MustCompile(`id="comment-([0-9a-f-]{36})"`).
+		FindAllStringSubmatch(page, -1)
+	require.Len(t, comments, 2)
+
+	t.Run("an empty comment is refused", func(t *testing.T) {
+		rec := h.postForm("/cards/"+cardUUID+"/comments",
+			url.Values{"csrf_token": {csrf}, "body": {"   "}}, cookie)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("a member deletes only their own", func(t *testing.T) {
+		// The owner's is first, the member's second — oldest first is the order a
+		// thread is read in.
+		ownersComment, membersComment := comments[0][1], comments[1][1]
+
+		assert.Equal(t, http.StatusForbidden, h.postForm(
+			"/comments/"+ownersComment+"/delete",
+			url.Values{"csrf_token": {csrf}}, cookie).Code)
+
+		assert.Equal(t, http.StatusSeeOther, h.postForm(
+			"/comments/"+membersComment+"/delete",
+			url.Values{"csrf_token": {csrf}}, cookie).Code)
+
+		after := body(h.get("/cards/"+cardUUID, cookie))
+		assert.Contains(t, after, "removed a comment",
+			"a tombstone, so the thread keeps its shape")
+	})
+}
+
+func TestTheMoveToLaneControlIsOfferedAndWorks(t *testing.T) {
+	// The keyboard path for a drag. A board whose cards can only be dragged is
+	// unusable without a pointer.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Rich Cards")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	cardUUID := h.addCard(t, cookie, csrf, p, lanes[0], "a card")
+
+	page := body(h.get("/cards/"+cardUUID, cookie))
+	assert.Contains(t, page, "/move-to")
+	assert.Contains(t, page, "Move to…")
+	assert.NotContains(t, page, `<option value="`+lanes[0]+`"`,
+		"the lane the card is already in is not offered")
+	assert.Contains(t, page, `<option value="`+lanes[1]+`"`)
+
+	rec := h.postForm("/cards/"+cardUUID+"/move-to", url.Values{
+		"csrf_token": {csrf}, "to_lane": {lanes[2]},
+	}, cookie)
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+
+	assert.Empty(t, h.laneOrder(t, cookie, lanes[0]))
+	assert.Equal(t, []string{"a card"}, h.laneOrder(t, cookie, lanes[2]))
+}
+
+func TestMoveToLaneRefusesAWIPBreach(t *testing.T) {
+	// The same rules as a drag, because it is the same code path.
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Rich Cards")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+
+	require.Equal(t, http.StatusSeeOther, h.postForm("/projects/"+p.Slug+"/lanes/"+lanes[1],
+		url.Values{"csrf_token": {csrf}, "name": {"Doing"}, "color": {"blue"},
+			"wip_limit": {"1"}}, cookie).Code)
+
+	h.addCard(t, cookie, csrf, p, lanes[1], "resident")
+	moving := h.addCard(t, cookie, csrf, p, lanes[0], "moving")
+
+	rec := h.postForm("/cards/"+moving+"/move-to", url.Values{
+		"csrf_token": {csrf}, "to_lane": {lanes[1]},
+	}, cookie)
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Contains(t, body(rec), "already at its limit")
+	assert.Equal(t, []string{"moving"}, h.laneOrder(t, cookie, lanes[0]))
+}
+
+func TestLabelManagementIsManagerOnly(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	memberUser := h.addUser(t, "member@example.com", authdomain.RoleMember)
+	p := h.makeProject(t, owner, "Rich Cards")
+	h.grant(t, owner, p, memberUser, projectdomain.RoleMember)
+
+	ownerCookie, _ := h.signIn(t, "owner@example.com")
+	ownerCSRF := h.csrfFor(t, ownerCookie)
+	bug := h.makeLabel(t, ownerCookie, ownerCSRF, p, "bug", "rose")
+
+	cookie, csrf := h.signIn(t, "member@example.com")
+	base := "/projects/" + p.Slug
+
+	for name, form := range map[string]struct {
+		path string
+		vals url.Values
+	}{
+		"create": {base + "/labels", url.Values{"name": {"sneaky"}, "color": {"blue"}}},
+		"rename": {base + "/labels/" + bug, url.Values{"name": {"renamed"}, "color": {"blue"}}},
+		"delete": {base + "/labels/" + bug + "/delete", url.Values{}},
+	} {
+		t.Run(name+" is refused to a member", func(t *testing.T) {
+			vals := form.vals
+			vals.Set("csrf_token", csrf)
+			assert.Equal(t, http.StatusForbidden, h.postForm(form.path, vals, cookie).Code)
+		})
+	}
+
+	t.Run("but a member may attach one to a card", func(t *testing.T) {
+		lanes := h.laneUUIDs(t, owner, p)
+		rec := h.postForm(base+"/lanes/"+lanes[0]+"/cards", url.Values{
+			"csrf_token": {csrf}, "title": {"labelled by a member"}, "labels": {bug},
+		}, cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, body(rec), ">bug<")
+	})
+
+	t.Run("and a duplicate name is a conflict", func(t *testing.T) {
+		rec := h.postForm(base+"/labels", url.Values{
+			"csrf_token": {ownerCSRF}, "name": {"bug"}, "color": {"blue"},
+		}, ownerCookie)
+		assert.Equal(t, http.StatusConflict, rec.Code)
+	})
+}
+
+func TestDeletingALabelRemovesItFromEveryCard(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Rich Cards")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+	bug := h.makeLabel(t, cookie, csrf, p, "bug", "rose")
+
+	rec := h.postForm("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
+		"csrf_token": {csrf}, "title": {"a card"}, "labels": {bug},
+	}, cookie)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, body(rec), ">bug<")
+
+	require.Equal(t, http.StatusSeeOther, h.postForm(
+		"/projects/"+p.Slug+"/labels/"+bug+"/delete",
+		url.Values{"csrf_token": {csrf}}, cookie).Code)
+
+	assert.NotContains(t, body(h.get("/projects/"+p.Slug, cookie)), ">bug<",
+		"the assignment cascades with the label")
 }

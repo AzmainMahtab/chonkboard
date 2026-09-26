@@ -38,6 +38,18 @@ templ ProjectSettingsPage(p view.Page, s view.ProjectSettings) {
 					</p>
 				}
 			}
+			@settingsSection("Labels", "Tags a member can attach to any card on this board.") {
+				if len(s.Labels) > 0 {
+					<ul class="flex flex-col gap-2">
+						for _, l := range s.Labels {
+							@components.LabelRow(s.Project.Slug, l)
+						}
+					</ul>
+				} else {
+					<p class="text-sm text-ink-3">No labels yet.</p>
+				}
+				@components.LabelForm(s.Project.Slug, s.LabelForm)
+			}
 			@settingsSection("People", "Who can open this board and work on its cards.") {
 				<ul class="flex flex-col gap-2">
 					for _, m := range s.Members {

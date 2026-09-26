@@ -178,8 +178,48 @@
   @apply w-full rounded-card border border-line-strong bg-surface px-2.5 py-1.5
          text-sm text-ink placeholder:text-ink-3;
 }
+/* Rendered markdown from a card body or a comment. The markup is produced by
+   goldmark and sanitised by bluemonday, so the tag set is known and small — these
+   rules style exactly that set and nothing else. */
+@utility prose-card {
+  @apply text-sm leading-relaxed text-ink;
+}
+
 @utility form-label {
   @apply mb-1 block text-xs font-medium tracking-wide text-ink-2;
+}
+
+@layer components {
+  /* Descendant selectors rather than utilities, because the markup comes from a
+     markdown renderer and carries no classes of its own. */
+  .prose-card > * + * { margin-top: 0.625rem; }
+  .prose-card h1,
+  .prose-card h2,
+  .prose-card h3 { @apply mt-3 text-sm font-semibold tracking-tight; }
+  .prose-card p { @apply text-sm leading-relaxed; }
+  .prose-card a { @apply text-accent underline underline-offset-2; }
+  .prose-card strong { @apply font-semibold; }
+  .prose-card ul { @apply list-disc pl-5; }
+  .prose-card ol { @apply list-decimal pl-5; }
+  .prose-card li { @apply my-0.5; }
+  .prose-card code {
+    @apply rounded-sm bg-surface-3 px-1 py-0.5 font-mono text-xs;
+  }
+  .prose-card pre {
+    @apply overflow-x-auto rounded-card bg-surface-3 p-2.5 font-mono text-xs;
+  }
+  .prose-card pre code { @apply bg-transparent p-0; }
+  .prose-card blockquote {
+    @apply border-l-2 border-line-strong pl-3 text-ink-2;
+  }
+  .prose-card hr { @apply border-line; }
+  .prose-card table { @apply w-full border-collapse text-xs; }
+  .prose-card th,
+  .prose-card td { @apply border border-line px-2 py-1 text-left; }
+  .prose-card th { @apply bg-surface-2 font-semibold; }
+  /* A task-list checkbox is a rendering of the text, not a control. */
+  .prose-card input[type="checkbox"] { @apply mr-1 align-middle; }
+  .prose-card ul:has(> li > input[type="checkbox"]) { @apply list-none pl-0; }
 }
 
 @layer utilities {

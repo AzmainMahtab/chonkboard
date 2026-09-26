@@ -1,93 +1,183 @@
 package components
 
-import (
-	"strings"
+import "github.com/AzmainMahtab/chonkboard/web/view"
 
-	"github.com/AzmainMahtab/chonkboard/web/view"
-)
-
-// CardModal is a card's detail view.
-//
-// Deliberately thin for now: title, description, where it is, who made it, and its
-// history. Labels, due date, priority, assignee, comments and attachments arrive in
-// phase 5 and each becomes a band in this panel.
+// CardModal is a card's detail view: what it is, who it is for, when it is due, what
+// has been said about it, and what is attached.
 templ CardModal(projectSlug string, d view.CardDetail) {
 	@Modal(d.Card.Title) {
 		@ModalHeader(d.Card.Title)
-		<div class="flex flex-col gap-5 px-4 py-4">
-			<dl class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-3">
-				<div class="flex items-baseline gap-1.5">
-					<dt>Lane</dt>
-					<dd class="font-medium text-ink-2">{ d.LaneName }</dd>
-				</div>
-				<div class="flex items-baseline gap-1.5">
-					<dt>Added by</dt>
-					<dd class="font-medium text-ink-2">{ d.CreatedBy }</dd>
-				</div>
-				<div class="flex items-baseline gap-1.5">
-					<dt>Added</dt>
-					<dd><time datetime={ d.CreatedAt.Format("2006-01-02T15:04:05Z07:00") }>{ d.CreatedAt.Format("2 Jan 2006") }</time></dd>
-				</div>
-				if d.IsArchived {
-					<dd class="rounded-pill bg-surface-3 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide">
-						Archived
-					</dd>
-				}
-			</dl>
-			if strings.TrimSpace(d.Description) != "" {
-				<div>
-					<h3 class="form-label">Description</h3>
-					<div class="whitespace-pre-wrap rounded-card border border-line bg-surface-2 px-3 py-2 text-sm leading-relaxed">
-						{ d.Description }
-					</div>
-				</div>
-			} else {
-				<p class="text-sm text-ink-3">No description.</p>
-			}
-			if len(d.History) > 0 {
-				<div>
-					<h3 class="form-label">History</h3>
-					<ol class="flex flex-col gap-1.5 text-xs text-ink-3">
-						for _, entry := range d.History {
-							<li class="flex flex-wrap items-baseline gap-1.5">
-								<span class="font-medium text-ink-2">{ entry.Actor }</span>
-								<span>{ activityVerb(entry) }</span>
-								<time
-									class="ml-auto tabular-nums"
-									datetime={ entry.At.Format("2006-01-02T15:04:05Z07:00") }
-								>{ entry.At.Format("2 Jan, 15:04") }</time>
-							</li>
-						}
-					</ol>
-				</div>
-			}
+		<div class="max-h-[70dvh] overflow-y-auto">
+			<div class="flex flex-col gap-5 px-4 py-4">
+				@cardFacts(d)
+				@cardDescription(d)
+				@CardLabels(d.Card.Labels)
+				@AttachmentList(d)
+				@CommentList(d)
+				@cardHistory(d)
+			</div>
 		</div>
-		<footer class="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">
-			<a
-				href={ templ.SafeURL("/cards/" + d.Card.UUID + "/edit") }
-				class="btn-quiet"
-				hx-get={ "/cards/" + d.Card.UUID + "/edit" }
-				hx-target="#modal"
-				hx-swap="innerHTML"
-			>Edit</a>
-			@cardArchiveButton(d)
-			<span class="flex-1"></span>
-			if d.CanDelete {
-				<form
-					method="post"
-					action={ templ.SafeURL("/cards/" + d.Card.UUID + "/delete") }
-					onsubmit="return confirm('Delete this card? Its comments and attachments go with it.')"
-				>
-					<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
-					<button type="submit" class="btn-quiet text-danger hover:bg-danger/10">Delete</button>
-				</form>
-			}
-		</footer>
+		@cardModalFooter(projectSlug, d)
 	}
 }
 
-// cardArchiveButton offers the reversible way off the board, which is what should be
-// reached for before delete.
+// cardFacts is the row of small facts under the title.
+templ cardFacts(d view.CardDetail) {
+	<dl class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-3">
+		<div class="flex items-baseline gap-1.5">
+			<dt>Lane</dt>
+			<dd class="font-medium text-ink-2">{ d.LaneName }</dd>
+		</div>
+		if d.Priority != "" {
+			<div class="flex items-baseline gap-1.5">
+				<dt>Priority</dt>
+				<dd class="font-medium text-ink-2">{ d.Priority }</dd>
+			</div>
+		}
+		if d.Card.Assignee != nil {
+			<div class="flex items-center gap-1.5">
+				<dt>For</dt>
+				<dd class="flex items-center gap-1.5 font-medium text-ink-2">
+					<span
+						class="grid size-5 place-items-center rounded-pill bg-surface-3 text-2xs font-semibold"
+						aria-hidden="true"
+					>{ initials(d.Card.Assignee.DisplayName) }</span>
+					{ d.Card.Assignee.DisplayName }
+				</dd>
+			</div>
+		}
+		if d.Card.DueAt != nil {
+			<div class="flex items-baseline gap-1.5">
+				<dt>Due</dt>
+				<dd class={ "font-medium", dueClass(d.Card.DueAt, now()) }>
+					<time datetime={ d.Card.DueAt.Format("2006-01-02") }>
+						{ d.Card.DueAt.Format("Mon 2 Jan 2006") }
+					</time>
+				</dd>
+			</div>
+		}
+		<div class="flex items-baseline gap-1.5">
+			<dt>Added by</dt>
+			<dd class="font-medium text-ink-2">{ d.CreatedBy }</dd>
+		</div>
+		if d.IsArchived {
+			<dd class="rounded-pill bg-surface-3 px-2 py-0.5 text-2xs font-medium uppercase tracking-wide">
+				Archived
+			</dd>
+		}
+	</dl>
+}
+
+// cardDescription renders the body.
+//
+// DescriptionHTML was rendered from markdown and sanitised in the handler, so it is
+// trusted markup by the time it reaches here. templ.Raw is correct precisely because
+// something upstream took responsibility for it — see internal/shared/markdown.
+templ cardDescription(d view.CardDetail) {
+	if d.HasDescription {
+		<div>
+			<h3 class="form-label">Description</h3>
+			<div class="prose-card">
+				@templ.Raw(d.DescriptionHTML)
+			</div>
+		</div>
+	} else {
+		<p class="text-sm text-ink-3">No description.</p>
+	}
+}
+
+// CardLabels shows which labels a card carries.
+templ CardLabels(labels []view.Label) {
+	if len(labels) > 0 {
+		<div>
+			<h3 class="form-label">Labels</h3>
+			<div class="flex flex-wrap gap-1">
+				for _, l := range labels {
+					@LabelChip(l)
+				}
+			</div>
+		</div>
+	}
+}
+
+templ cardHistory(d view.CardDetail) {
+	if len(d.History) > 0 {
+		<details class="text-xs">
+			<summary class="cursor-pointer text-ink-3 hover:text-ink-2">
+				History ({ itoa(len(d.History)) })
+			</summary>
+			<ol class="mt-2 flex flex-col gap-1.5 text-ink-3">
+				for _, entry := range d.History {
+					<li class="flex flex-wrap items-baseline gap-1.5">
+						<span class="font-medium text-ink-2">{ entry.Actor }</span>
+						<span>{ activityVerb(entry) }</span>
+						<time
+							class="ml-auto tabular-nums"
+							datetime={ entry.At.Format("2006-01-02T15:04:05Z07:00") }
+						>{ entry.At.Format("2 Jan, 15:04") }</time>
+					</li>
+				}
+			</ol>
+		</details>
+	}
+}
+
+templ cardModalFooter(projectSlug string, d view.CardDetail) {
+	<footer class="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">
+		<a
+			href={ templ.SafeURL("/cards/" + d.Card.UUID + "/edit") }
+			class="btn-quiet"
+			hx-get={ "/cards/" + d.Card.UUID + "/edit" }
+			hx-target="#modal"
+			hx-swap="innerHTML"
+		>Edit</a>
+		@MoveToLaneControl(d)
+		@cardArchiveButton(d)
+		<span class="flex-1"></span>
+		if d.CanDelete {
+			<form
+				method="post"
+				action={ templ.SafeURL("/cards/" + d.Card.UUID + "/delete") }
+				onsubmit="return confirm('Delete this card? Its comments and attachments go with it.')"
+			>
+				<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+				<button type="submit" class="btn-quiet text-danger hover:bg-danger/10">Delete</button>
+			</form>
+		}
+	</footer>
+}
+
+// MoveToLaneControl is the keyboard path for a drag.
+//
+// Dragging is a pointer gesture, so a board whose cards can only be dragged is
+// unusable without a mouse. This posts to the same ordering rules the drag uses; the
+// server derives both lane orders itself, because a menu has no idea what else is in
+// the target lane.
+templ MoveToLaneControl(d view.CardDetail) {
+	if len(d.MoveTo) > 0 {
+		<form
+			method="post"
+			action={ templ.SafeURL("/cards/" + d.Card.UUID + "/move-to") }
+			class="flex items-center gap-1.5"
+		>
+			<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>
+			<label class="sr-only" for={ "move-to-" + d.Card.UUID }>Move to lane</label>
+			<select
+				id={ "move-to-" + d.Card.UUID }
+				name="to_lane"
+				class="field w-auto py-1 text-xs"
+				required
+			>
+				<option value="">Move to…</option>
+				for _, lane := range d.MoveTo {
+					<option value={ lane.Value }>{ lane.Label }</option>
+				}
+			</select>
+			<button type="submit" class="btn-quiet px-2 text-xs">Go</button>
+		</form>
+	}
+}
+
 templ cardArchiveButton(d view.CardDetail) {
 	<form method="post" action={ templ.SafeURL("/cards/" + d.Card.UUID + "/archive") }>
 		<input type="hidden" name="csrf_token" value={ formCSRF(ctx) }/>

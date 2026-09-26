@@ -37,6 +37,11 @@ type Deps struct {
 	// address is one person, and is what bounds a guessing attack).
 	LoginByIP    *ratelimit.Limiter
 	LoginByEmail *ratelimit.Limiter
+
+	// MaxRequestBytes caps every request body. It has to exceed UPLOAD_MAX_BYTES by
+	// enough for the multipart envelope, or a file at exactly the upload ceiling
+	// would be refused by this instead.
+	MaxRequestBytes int64
 }
 
 func Router(d Deps) http.Handler {
@@ -52,6 +57,9 @@ func Router(d Deps) http.Handler {
 	r.Use(middleware.RequestLogger(d.Log))
 	r.Use(chimw.Recoverer)
 	r.Use(middleware.SecurityHeaders)
+	// Before anything parses a body. The CSRF check has to read a multipart form to
+	// find its token, so the ceiling has to exist by then.
+	r.Use(middleware.LimitBody(d.MaxRequestBytes))
 
 	// ---- Public: no session required, and deliberately not wrapped in the
 	// session middleware, so these cannot come to require the thing they exist
@@ -117,6 +125,12 @@ func Router(d Deps) http.Handler {
 				br.Post("/lanes/{lane}/move", d.BoardMgr.MoveLane)
 				br.Get("/lanes/{lane}/delete", d.BoardMgr.ConfirmDeleteLane)
 				br.Post("/lanes/{lane}/delete", d.BoardMgr.DeleteLane)
+
+				// Labels: a manager defines them, and any member attaches them.
+				br.Post("/labels", d.BoardMgr.CreateLabel)
+				br.Get("/labels/{label}/edit", d.BoardMgr.EditLabel)
+				br.Post("/labels/{label}", d.BoardMgr.UpdateLabel)
+				br.Post("/labels/{label}/delete", d.BoardMgr.DeleteLabel)
 			})
 
 			// Addressed by uuid alone, because these appear in the DOM on every
@@ -130,6 +144,16 @@ func Router(d Deps) http.Handler {
 			pr.Post("/cards/{card}/archive", d.Cards.SetArchived)
 			pr.Post("/cards/{card}/delete", d.Cards.Delete)
 			pr.Post("/cards/{card}/move", d.Cards.Move)
+			pr.Post("/cards/{card}/move-to", d.Cards.MoveToLane)
+
+			// The rich card. Comments and attachments are addressed by their own
+			// uuid for the same reason cards are, and resolve their project the
+			// same way.
+			pr.Post("/cards/{card}/comments", d.Cards.Comment)
+			pr.Post("/comments/{comment}/delete", d.Cards.DeleteComment)
+			pr.Post("/cards/{card}/attachments", d.Cards.Attach)
+			pr.Get("/attachments/{attachment}", d.Cards.ServeAttachment)
+			pr.Post("/attachments/{attachment}/delete", d.Cards.DeleteAttachment)
 		})
 	})
 

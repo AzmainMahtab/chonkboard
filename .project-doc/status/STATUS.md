@@ -11,8 +11,8 @@ Phase definitions and gates: `../plan/ROADMAP.md`.
 | 2 | Auth and sessions | **done** | yes, walked end to end with curl |
 | 3 | Projects, lanes, membership | **done** | yes, the member wall walked with curl |
 | 4 | Cards core | **done** | yes, every move case walked with curl |
-| 5 | Rich card | **next** | — |
-| 6 | Live board | not started | — |
+| 5 | Rich card | **done** | yes, including the attachment-leak check |
+| 6 | Live board | **next** | — |
 | 7 | Admin console | not started | — |
 | 8 | Harden and ship | not started | — |
 
@@ -46,9 +46,66 @@ commit was left to the owner.
 - **Live updates work**: a move in one tab appears in every other tab on that board,
   without refreshing, and does not disturb the tab that made it.
 
-What is missing from a card is its depth — priority, assignee, due date, labels,
-comments and attachments. That is phase 5. Every one of those columns already exists
-and round-trips; what is missing is the form fields and the panels.
+- A card carries **priority, an assignee, a due date, labels, a markdown description,
+  comments and file attachments.** The description and comments are rendered
+  server-side and sanitised.
+- A manager defines a project's labels; any member attaches them.
+- Every card can be moved from its own menu as well as by dragging, so the board is
+  usable without a pointer.
+
+What is missing is polish on the live path — the drag guard, reconnect behaviour and
+the whole-board refresh after a structural change — plus the admin console, and
+shipping. Broadcast itself already works.
+
+---
+
+## Phase 5 — done
+
+### Built
+
+- **`internal/shared/markdown`** — goldmark with GFM and **no `WithUnsafe`**, then
+  bluemonday's `UGCPolicy`. Raw HTML in a card body is escaped before the sanitiser sees
+  it, so there are two lines of defence rather than one.
+- **`internal/platform/filestore`** — attachment bytes on disk under a generated 32-hex
+  name, fanned out by first byte. Never the uploader's filename, and `pathFor` refuses
+  anything this package did not generate.
+- **`internal/card/comments.go`** and **`attachments.go`** — one file per feature,
+  model and queries and rules together, because they read as one thing.
+- **`internal/card/service.go`** — every rich field, the assignee membership check, and
+  `MoveToLane` going through the same `Move` a drag uses.
+- **`internal/platform/middleware/bodylimit.go`** — one global request ceiling, applied
+  before anything parses a body.
+- **`web/components`** — the card modal with its facts, description, labels, files,
+  comments and history; the rich card form; the label management UI; and `prose-card`
+  rules styling exactly the tag set the sanitiser permits.
+
+### Gate: met
+
+`make check` and `make check-postgres` both green. The full table is in
+`../plan/ROADMAP.md`. The four that matter most:
+
+| Check | Result |
+|---|---|
+| **Markdown with `<script>`, `onerror`, `javascript:`, `<iframe>`, `<form>`, `<svg onload>`** | **all inert** |
+| **A 200KB upload against a 64KB ceiling** | **413, readable message, no row, no orphan file** |
+| **A leaked attachment URL fetched without access** | **404, byte-identical to a made-up id** |
+| Every rich field | round-trips through database, modal, board and edit form |
+
+### One defect, and it was total
+
+**Every attachment upload returned 403.** `r.ParseForm` reads only URL-encoded bodies,
+so the CSRF check found no token in a multipart request. Invisible to a JavaScript
+client sending the token as a header, and invisible to a test that posts a URL-encoded
+form and calls it an upload — the route test now builds a real `multipart.Writer` body.
+
+Fixing it needed a body ceiling to exist first, because parsing a multipart body spools
+it to disk: an unbounded upload would have been written before anything could refuse it.
+So `middleware.LimitBody`, planned for phase 8, landed here.
+
+### Not verified
+
+The modal's focus trap is Alpine's `x-trap.noscroll` and cannot be exercised without a
+browser. It joins the outstanding browser check below.
 
 ---
 
@@ -374,35 +431,37 @@ Nothing from phase 0 remains on any route.
 
 | | |
 |---|---|
-| Binary | ~14 MB (static, `CGO_ENABLED=0`, stripped) — grew with the SQLite driver |
-| Stylesheet | **6.6 KB gzipped** |
+| Binary | ~15 MB (static, `CGO_ENABLED=0`, stripped) — grew with the SQLite driver |
+| Stylesheet | **7.2 KB gzipped** |
 | JavaScript | **52 KB gzipped**, four vendored libraries plus `board.js` |
 | Migrations | 5 files, 237 lines of SQL |
-| Go files | 86 hand-written |
-| templ components | 18 |
-| Tests | 292 default + 9 PostgreSQL-tagged |
-| Aggregate coverage | 67.6% of statements |
+| Go files | 95 hand-written |
+| templ components | 21 |
+| Tests | 351 default + 9 PostgreSQL-tagged |
+| Aggregate coverage | 70.8% of statements |
 
 ---
 
-## Phase 5 — next
+## Phase 6 — next
 
-The rich card: priority, assignee, due date, labels, comments, attachments, and the
-detail modal that holds them.
+The live board's remaining half. Broadcast already works — the hub, its heartbeat and
+the per-tab echo filter were built in phase 0, and phase 4 wired the real card service
+into them, so a move in one tab already appears in another.
 
-Every column already exists and round-trips — phase 1 built and tested all of them,
-and `web/view.Card` already renders a priority rule, a due date with its overdue
-colouring, an assignee avatar and label chips. What is missing is the form fields,
-the panels in the modal, and the comment and attachment stores.
+What phase 6 owns:
 
-Three things to be careful of, all already decided:
+- **The drag guard.** `board.js` sets a `dragging` flag and `htmx:sseBeforeMessage`
+  defers an incoming swap until the drop lands. Without it an arriving update can swap
+  a card out from under the hand still holding it. **This is the one thing on the
+  critical path that has never been exercised in a browser.**
+- **`board-dirty` for structural changes.** A lane added, renamed, recoloured, reordered
+  or deleted currently updates only the tab that did it; the others need a whole-board
+  re-fetch. The board fragment and its `hx-trigger="sse:board-dirty"` are already in
+  place — what is missing is the broadcast from the board handler.
+- **Reconnect.** The SSE extension retries on its own; what needs checking is that a
+  tab which missed events while disconnected re-fetches rather than sitting stale.
+- **Hub tests** — subscribe, broadcast, unsubscribe, a slow client dropped rather than
+  blocking a write, and no goroutine leak after unsubscribe.
 
-- `card.EditInput` grows; the service already passes the phase-5 fields through
-  unchanged so that editing a title cannot clear a due date.
-- Label management has a service, a store and tests from phase 3 but no UI. It gets
-  one here, because a label is only useful once a card can carry it.
-- An attachment is authorised per request against its card's project and returns
-  **404** when not permitted, so a leaked URL does not confirm the file exists.
-
-The gate is every rich field round-tripping, and the upload limits and attachment
-authorisation enforced.
+The gate is two browsers side by side: a move in one appears in the other in about
+100ms, and never interrupts a local drag.

@@ -67,6 +67,14 @@ there is only one source.
 | `SUPER_ADMIN_PASSWORD` | — | leave unset and one is generated and printed once |
 | `UPLOAD_DIR` | `./data/uploads` | |
 | `UPLOAD_MAX_BYTES` | `10485760` | 10 MiB per file |
+
+Attachment bytes live under `UPLOAD_DIR`, in 256 subdirectories keyed by the first byte
+of a generated 32-hex name — never the uploader's filename, which is a path-traversal
+bug and a collision waiting to happen. `UPLOAD_MAX_BYTES` is enforced twice: once by
+`middleware.LimitBody` on the whole request (plus a megabyte of multipart envelope
+slack) and once by the file store while copying, so a request that lies about its length
+is still refused.
+
 | `BACKUP_DIR` | `./data/backups` | |
 | `BACKUP_INTERVAL` | `6h` | |
 | `BACKUP_KEEP` | `28` | oldest pruned past this |
