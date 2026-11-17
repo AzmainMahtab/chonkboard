@@ -1,0 +1,47 @@
+name: chonkboard
+
+services:
+  chonkboard:
+    image: ghcr.io/azmainmahtab/chonkboard:${IMAGE_TAG:?set IMAGE_TAG}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      APP_ENV: production
+      APP_ADDR: ":8080"
+      APP_BASE_URL: https://chonkboard.athlee.fit
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SESSION_TTL: ${SESSION_TTL:-168h}
+      SESSION_COOKIE_SECURE: "true"
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:?set SUPER_ADMIN_EMAIL}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:?set SUPER_ADMIN_PASSWORD}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-10485760}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-6h}
+      BACKUP_KEEP: ${BACKUP_KEEP:-28}
+    volumes:
+      - chonkboard_data:/data
+    networks:
+      - athlee
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+networks:
+  athlee:
+    name: athlee_athlee
+    external: true
+
+volumes:
+  chonkboard_data:
