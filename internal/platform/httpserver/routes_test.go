@@ -170,6 +170,17 @@ func (h *harness) postForm(path string, form url.Values, cookie *http.Cookie) *h
 	return h.do(r)
 }
 
+// postFormHTMX posts a form the way htmx does, with the HX-Request header.
+func (h *harness) postFormHTMX(path string, form url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("HX-Request", "true")
+	if cookie != nil {
+		r.AddCookie(cookie)
+	}
+	return h.do(r)
+}
+
 // signIn logs a user in over HTTP and returns the session cookie plus the CSRF
 // token the pages will carry.
 func (h *harness) signIn(t *testing.T, email string) (*http.Cookie, string) {
@@ -1067,7 +1078,7 @@ func (h *boardHarness) addCard(
 	p *projectdomain.Project, laneUUID, title string,
 ) string {
 	t.Helper()
-	rec := h.postForm("/projects/"+p.Slug+"/lanes/"+laneUUID+"/cards", url.Values{
+	rec := h.postFormHTMX("/projects/"+p.Slug+"/lanes/"+laneUUID+"/cards", url.Values{
 		"csrf_token": {csrf}, "title": {title},
 	}, cookie)
 	require.Equal(t, http.StatusOK, rec.Code, "creating %q", title)
@@ -1112,6 +1123,28 @@ func (h *boardHarness) move(
 	r.Header.Set(middleware.CSRFHeader, csrf)
 	r.AddCookie(cookie)
 	return h.do(r)
+}
+
+func TestAPlainCardSaveRedirectsToTheBoard(t *testing.T) {
+	h := newBoardHarness(t)
+	owner := h.addSuperAdmin(t, "owner@example.com")
+	p := h.makeProject(t, owner, "Chonk Redirect")
+	cookie, _ := h.signIn(t, "owner@example.com")
+	csrf := h.csrfFor(t, cookie)
+	lanes := h.laneUUIDs(t, owner, p)
+
+	rec := h.postForm("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
+		"csrf_token": {csrf}, "title": {"plain create"},
+	}, cookie)
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Equal(t, "/projects/"+p.Slug, rec.Header().Get("Location"))
+
+	id := h.addCard(t, cookie, csrf, p, lanes[0], "to edit")
+	rec = h.postForm("/cards/"+id, url.Values{
+		"csrf_token": {csrf}, "title": {"plain edit"},
+	}, cookie)
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Equal(t, "/projects/"+p.Slug, rec.Header().Get("Location"))
 }
 
 func TestACardSurvivesAReload(t *testing.T) {
@@ -1312,14 +1345,14 @@ func TestAMemberMayWorkOnCardsButDeleteOnlyTheirOwn(t *testing.T) {
 	csrf := h.csrfFor(t, cookie)
 
 	t.Run("create", func(t *testing.T) {
-		rec := h.postForm("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
+		rec := h.postFormHTMX("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
 			"csrf_token": {csrf}, "title": {"the member's card"},
 		}, cookie)
 		assert.Equal(t, http.StatusOK, rec.Code)
 	})
 
 	t.Run("edit somebody else's card — allowed, it is a shared board", func(t *testing.T) {
-		rec := h.postForm("/cards/"+ownersCard, url.Values{
+		rec := h.postFormHTMX("/cards/"+ownersCard, url.Values{
 			"csrf_token": {csrf}, "title": {"edited by a member"},
 		}, cookie)
 		assert.Equal(t, http.StatusOK, rec.Code)
@@ -1392,7 +1425,7 @@ func TestACardOnAnotherBoardIs404(t *testing.T) {
 	}
 
 	t.Run("POST edit", func(t *testing.T) {
-		rec := h.postForm("/cards/"+privateCard, url.Values{
+		rec := h.postFormHTMX("/cards/"+privateCard, url.Values{
 			"csrf_token": {csrf}, "title": {"hijacked"},
 		}, cookie)
 		assert.Equal(t, http.StatusNotFound, rec.Code)
@@ -1445,7 +1478,7 @@ func TestTheCardModalAndItsHistory(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, h.move(cookie, csrf, c, url.Values{
 		"to_lane": {lanes[1]}, "to_order": {c}, "from_lane": {lanes[0]},
 	}).Code)
-	require.Equal(t, http.StatusOK, h.postForm("/cards/"+c, url.Values{
+	require.Equal(t, http.StatusOK, h.postFormHTMX("/cards/"+c, url.Values{
 		"csrf_token": {csrf}, "title": {"a card"}, "description": {"Now described."},
 	}, cookie).Code)
 
@@ -1468,7 +1501,7 @@ func TestAnInvalidCardComesBackOnTheForm(t *testing.T) {
 	lanes := h.laneUUIDs(t, owner, p)
 
 	t.Run("on create", func(t *testing.T) {
-		rec := h.postForm("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
+		rec := h.postFormHTMX("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
 			"csrf_token": {csrf}, "title": {"   "}, "description": {"kept"},
 		}, cookie)
 
@@ -1479,7 +1512,7 @@ func TestAnInvalidCardComesBackOnTheForm(t *testing.T) {
 
 	t.Run("on edit", func(t *testing.T) {
 		c := h.addCard(t, cookie, csrf, p, lanes[0], "original")
-		rec := h.postForm("/cards/"+c, url.Values{
+		rec := h.postFormHTMX("/cards/"+c, url.Values{
 			"csrf_token": {csrf}, "title": {""}, "description": {"kept"},
 		}, cookie)
 
@@ -1601,7 +1634,7 @@ func TestEveryRichFieldRoundTripsOverHTTP(t *testing.T) {
 	bug := h.makeLabel(t, cookie, csrf, p, "bug", "rose")
 	chore := h.makeLabel(t, cookie, csrf, p, "chore", "teal")
 
-	rec := h.postForm("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
+	rec := h.postFormHTMX("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
 		"csrf_token":  {csrf},
 		"title":       {"A rich card"},
 		"description": {"## Heading\n\nSome **bold** text."},
@@ -1656,7 +1689,7 @@ func TestMarkdownRendersInertOverHTTP(t *testing.T) {
 		`<form action="https://evil.example"><input name="p"></form>` + "\n" +
 		`<svg onload="alert(4)"></svg>`
 
-	require.Equal(t, http.StatusOK, h.postForm("/cards/"+cardUUID, url.Values{
+	require.Equal(t, http.StatusOK, h.postFormHTMX("/cards/"+cardUUID, url.Values{
 		"csrf_token": {csrf}, "title": {"a card"}, "description": {hostile},
 	}, cookie).Code)
 	require.Equal(t, http.StatusSeeOther, h.postForm("/cards/"+cardUUID+"/comments", url.Values{
@@ -1959,7 +1992,7 @@ func TestLabelManagementIsManagerOnly(t *testing.T) {
 
 	t.Run("but a member may attach one to a card", func(t *testing.T) {
 		lanes := h.laneUUIDs(t, owner, p)
-		rec := h.postForm(base+"/lanes/"+lanes[0]+"/cards", url.Values{
+		rec := h.postFormHTMX(base+"/lanes/"+lanes[0]+"/cards", url.Values{
 			"csrf_token": {csrf}, "title": {"labelled by a member"}, "labels": {bug},
 		}, cookie)
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -1983,7 +2016,7 @@ func TestDeletingALabelRemovesItFromEveryCard(t *testing.T) {
 	lanes := h.laneUUIDs(t, owner, p)
 	bug := h.makeLabel(t, cookie, csrf, p, "bug", "rose")
 
-	rec := h.postForm("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
+	rec := h.postFormHTMX("/projects/"+p.Slug+"/lanes/"+lanes[0]+"/cards", url.Values{
 		"csrf_token": {csrf}, "title": {"a card"}, "labels": {bug},
 	}, cookie)
 	require.Equal(t, http.StatusOK, rec.Code)

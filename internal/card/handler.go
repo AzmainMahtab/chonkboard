@@ -139,7 +139,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.broadcast(r, access, []string{card.LaneUUID})
-	h.renderLane(w, r, access, card.LaneUUID)
+	h.afterCardSave(w, r, access, card.LaneUUID)
 }
 
 // Detail renders the card modal.
@@ -222,7 +222,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.broadcast(r, access, []string{updated.LaneUUID})
-	h.renderLane(w, r, access, updated.LaneUUID)
+	h.afterCardSave(w, r, access, updated.LaneUUID)
 }
 
 // SetArchived archives or restores a card.
@@ -376,6 +376,19 @@ func (h *Handler) renderLane(
 		return
 	}
 	render.Fragment(w, r, components.Lane(board, lane))
+}
+
+// afterCardSave answers a saved card form. The form is a plain POST, so the browser
+// navigates to the response: a lane fragment would land as a bare unstyled page.
+// HTMX callers get the lane to swap in.
+func (h *Handler) afterCardSave(
+	w http.ResponseWriter, r *http.Request, access *project.Access, laneUUID string,
+) {
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/projects/"+access.Project.Slug, http.StatusSeeOther)
+		return
+	}
+	h.renderLane(w, r, access, laneUUID)
 }
 
 // afterCardChange answers a non-HTMX form post with a redirect to the board, and an
