@@ -25,8 +25,16 @@ services:
       BACKUP_KEEP: ${BACKUP_KEEP:-28}
     volumes:
       - chonkboard_data:/data
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: proxy
+      traefik.http.routers.chonkboard.rule: Host(`chonkboard.athlee.fit`)
+      traefik.http.routers.chonkboard.entrypoints: websecure
+      traefik.http.routers.chonkboard.tls.certresolver: letsencrypt
+      traefik.http.routers.chonkboard.middlewares: secure-headers@file
+      traefik.http.services.chonkboard.loadbalancer.server.port: "8080"
     networks:
-      - athlee
+      - proxy
     logging:
       driver: json-file
       options:
@@ -39,8 +47,8 @@ services:
       retries: 30
 
 networks:
-  athlee:
-    name: athlee_athlee
+  proxy:
+    name: proxy
     external: true
 
 volumes:
