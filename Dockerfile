@@ -5,7 +5,7 @@
 # the compiled Go. The standalone CLI means no Node in this image or any other.
 FROM alpine:3.21 AS css
 ARG TAILWIND_VERSION=v4.1.18
-RUN apk add --no-cache curl
+RUN apk add --no-cache curl libgcc libstdc++
 WORKDIR /src
 RUN curl -sSLf -o /usr/local/bin/tailwindcss \
       "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-x64-musl" \
