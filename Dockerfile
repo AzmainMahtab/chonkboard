@@ -8,7 +8,7 @@ ARG TAILWIND_VERSION=v4.1.18
 RUN apk add --no-cache curl
 WORKDIR /src
 RUN curl -sSLf -o /usr/local/bin/tailwindcss \
-      "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-x64" \
+      "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-x64-musl" \
     && chmod +x /usr/local/bin/tailwindcss
 COPY web/css ./web/css
 COPY web/layouts ./web/layouts
