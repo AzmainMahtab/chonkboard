@@ -1,0 +1,73 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/azmainmahtab/chonkboard:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: Render the environment file
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          SUPER_ADMIN_EMAIL: ${{ secrets.SUPER_ADMIN_EMAIL }}
+          SUPER_ADMIN_PASSWORD: ${{ secrets.SUPER_ADMIN_PASSWORD }}
+        run: |
+          umask 077
+          for k in IMAGE_TAG SUPER_ADMIN_EMAIL SUPER_ADMIN_PASSWORD; do
+            v="${!k}"
+            if [ -z "$v" ]; then echo "::error::secret $k is empty"; exit 1; fi
+            printf '%s=%s\n' "$k" "$v"
+          done > "$RUNNER_TEMP/chonkboard.env"
+      - name: Copy the compose file and environment
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=accept-new devops@athlee-prod"
+          $SSH 'mkdir -p /opt/chonkboard'
+          $SSH 'umask 077 && cat > /opt/chonkboard/.env.new' < "$RUNNER_TEMP/chonkboard.env"
+          $SSH 'cat > /opt/chonkboard/compose.yml' < deploy/compose.prod.yml
+          rm -f "$RUNNER_TEMP/chonkboard.env"
+      - name: Pull and start
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=accept-new devops@athlee-prod"
+          printf '%s' "$GHCR_TOKEN" | $SSH "docker login ghcr.io -u $GHCR_USER --password-stdin"
+          $SSH 'cd /opt/chonkboard && mv .env.new .env && dc="docker compose --env-file .env -f compose.yml" && $dc pull && $dc up -d --remove-orphans --wait --wait-timeout 120 && $dc ps'
+          $SSH 'docker logout ghcr.io'
