@@ -9,7 +9,7 @@
 /bin/
 /tmp/
 /dist/
-chonkboard
+/chonkboard
 build-errors.log
 
 # Generated code and assets. Both are reproducible: *_templ.go from the .templ
